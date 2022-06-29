@@ -2,6 +2,7 @@
 
 import pyodbc 
 import pandas as pd
+import numpy as np
 import datetime
 import time
 from statsmodels.tsa.seasonal import STL
@@ -21,7 +22,7 @@ import shutil
 from pathlib import Path
 
 
-class Get_SQL_Data:
+class Get_SQL_Data():
     '''
     Opens a connection to SQL Server, sends queries and returns data.
     Query options included are included in the dictionary "self.dict" (Communications, Actuations, MaxOuts)
@@ -238,17 +239,6 @@ class Get_SQL_Data:
         return(self.run_query(sql, index_col))
 
 
-class TransformData:
-    '''
-    Apply time series decomposition to find statistical anomalies
-    '''
-    pass
-
-
-class Decompose():
-    pass
-
-
 class Get_RITIS_Data():
     '''
     Download Data using RITIS Massive Data Downloader.
@@ -456,6 +446,9 @@ class Get_RITIS_Data():
         self.driver.quit() # quits the browser
 
 
+class Decompose():
+    pass
+
 
 class Analytics():
 
@@ -463,7 +456,7 @@ class Analytics():
         self.today = datetime.datetime.now().date()
 
     def load_data(self, folder, date=str(datetime.datetime.now().date()), num_days = 35):
-        '''Loads raw data from selected folder and date range'''
+        '''Loads parquet files from selected folder and date range'''
         # Get list of file names
         file_names = sorted(glob.glob(f"{folder}/*.parquet"))
         file_dates = [name.split('\\')[1].split('.')[0] for name in file_names]
@@ -549,4 +542,145 @@ class Analytics():
         pass
 
 
+class DetectorHealth(Analytics):
+        
+    def load_all_data(self, days=35, date='2022-03-07'):
+            '''Load each data type'''
+            def quick_load(folder, date, num_days):
+                    try:
+                            now = datetime.datetime.now()
+                            df = self.load_data(folder, date, num_days)
+                            #print(f'{folder} took {datetime.datetime.now() - now} seconds')
+                            return df.reset_index()
+                    except Exception:
+                            print(f'{folder} not loaded, missing data')
 
+            self.actuations = quick_load(folder='Actuations', date=date, num_days=days).astype({'DeviceID':'uint16', 'MT':'uint8', 'Total':'UInt16'}) #UInt handles NaN, for when missing values are added in
+            self.comm = quick_load(folder='Communications', date=date, num_days=days).astype({'DeviceID':'uint16', 'Average':'float32', 'EventID':'category'})
+            #self.maxout = quick_load(folder='MaxOuts', date=date, num_days=days)#add datatypes later
+            self.maxtime = quick_load(folder='MaxTimeFaults', date=date, num_days=days).rename(columns={'Parameter': 'MT', 'EventID':'Fault_MaxTime'}).astype({'DeviceID':'uint16', 'MT':'uint8', 'Fault_MaxTime':'category'})
+
+    def cleanse(self):
+            # Get distinct DeviceID and Parameter pairs from Actuations
+            detector_pairs = self.actuations[['DeviceID', 'MT']].drop_duplicates()
+            # Get table of time periods with zero comm loss for each device
+            comm = self.comm[self.comm['EventID'] == 502] #EventID 502 is %comm loss
+            comm = comm[comm['Average'] == 0] #Filter to %comm loss is zero
+            comm = comm[['TimeStamp', 'DeviceID']]
+            # Generate timestamp for each detector where the signal had no comm loss
+            # This is meant to be a cross product between timestamps with zero comm loss and each detector at a given signal
+            # This table represents each time period where there should have been good data recorded
+            Actuations_All = pd.merge(comm, detector_pairs)
+            #Actuations_All[(Actuations_All['DeviceID']==2) & (Actuations_All['MT']==1)].sort_values('TimeStamp', ascending=False)
+            # Merge previous table with actual actuations. There will be NaN's where there were no actuations (due to no volume or detector faults)
+            Actuations_All = pd.merge(Actuations_All, self.actuations, how="left")
+            # Fill NAs with zeros. Keep datatype as int
+            Actuations_All = Actuations_All.fillna(0)
+            Actuations_All['Total'] = Actuations_All['Total'].astype('uint16') #back to Numpy dtype to have Numpy operations work
+            del self.actuations
+            del self.comm
+            return Actuations_All
+
+    def GEH(self, df):
+            '''Calculates GEH Statistic between Total and Median
+            https://en.wikipedia.org/wiki/GEH_statistic'''
+            M = df['Total']
+            C = df['Median']
+            sign = np.sign(M - C)
+            GEH = np.where(C == 0, 0, ((2 * (M - C)**2) / (M + C))**0.5)
+            # add sign back to GEH for use in Z-score calc
+            return np.where(C == 0, np.NaN, GEH * sign)
+
+    def dims(self):
+            '''Get traffic signal dimension table with names and parent groups'''
+            sql = 'SELECT ID as DeviceID, ParentID FROM GroupableElements WHERE ParentID IS NOT NULL'
+            index_col=['DeviceID']
+            server='SP2SQLMAX101'
+            database='MaxView_1.9.0.744'
+            return Get_SQL_Data(server=server, database=database).run_query(sql=sql, index_col=index_col).reset_index().astype({'DeviceID':'uint16', 'ParentID':'category'})
+
+    def normalize(self, df):
+            '''Returns indexd colum of normalized valuse, using Vectorization
+            NO INDEXED COLUMNS'''
+            mean = df.groupby(['TimeStamp', 'ParentID'])['GEH'].transform("mean")
+            std = df.groupby(['TimeStamp', 'ParentID'])['GEH'].transform("std")
+            return (df['GEH'] - mean) / std
+
+    def ratio_faults(self, df):
+            '''Calculates ratio of Total to the Average for each detector on each day
+            The average is limited to periods from 6am to 6pm
+            Returns weather the ratio is a fault, given conditions'''
+            df2 = df.copy()
+            # Need date column for groupby
+            df2['Date'] = df2['TimeStamp'].dt.date
+            # Need temporary Total column for averaging Total between 6am and 6pm
+            df2['Day_Total'] = np.where(df2['DayPeriod'] >= 25, np.where(df2['DayPeriod'] < 73, df2['Total'], np.NaN), np.NaN)
+            # Average between 6am and 6pm
+            mean = df2.groupby(['DeviceID', 'MT', 'Date'])['Day_Total'].transform("mean")
+            ratio = df2['Total'] / mean
+            # Set conditions for a fault. These numbers can be adjusted
+            conditions = [
+                    (ratio >= 3) & (df2['Total'] > 40),
+                    (df2['DayPeriod'] < 17) & (ratio > 0.75) & (df2['Total'] > 10)
+                    ]
+            choices = [True, True]
+            return np.select(conditions, choices, default=False)
+
+    def fault_category(self, df):
+            '''Categorizes the type of fault'''
+            conditions = [
+                    (df['Fault_MaxTime']==87),
+                    (df['Fault_MaxTime']==88),
+                    (df['Fault_Z_score']==True),
+                    (df['Fault_Ratio']==True)
+                    ]
+            choices = ['Stuck On', 'Erratic', 'Anomaly', 'Excessive']
+            return np.select(conditions, choices, default='None')
+
+    def seasonal_median(self, df):
+            '''Calculate the median within each seasonal period'''
+            # Add seasonal periods
+            df['WeekPeriod'] = df['TimeStamp'].dt.isocalendar().day.astype('int8')
+            df['DayPeriod'] = ((df['TimeStamp'].dt.hour * 60 + df['TimeStamp'].dt.minute)/15 + 1).astype('int8')
+            # Return median
+            return df.groupby(['DeviceID', 'MT', 'WeekPeriod', 'DayPeriod'])['Total'].transform('median')        
+
+    def transform(self, df):
+            '''Apply transformation steps to classify outliers
+            and return final dataframe'''
+            # Calculate median and GEH per detector
+            df['Median'] = self.seasonal_median(df).astype('uint16')
+            df['GEH'] = self.GEH(df).astype('float16')
+            # Add ParentID from MaxView, calc Z-scores grouped by ParentID
+            df = pd.merge(df, self.dims())
+            df['Z_Score'] = self.normalize(df).astype('float16')
+            df['Fault_Z_score'] = np.where(abs(df['Z_Score']) >= 3.5, np.where(abs(df['GEH']) > 5, True, False), False)
+            # Find "Ratio Faults" due to excessive nighttime actuations
+            df['Fault_Ratio'] = self.ratio_faults(df)
+            # Add MaxTime Faults. Drop duplicates in case there are "Stuck On" and "Erratic" during same timestamp
+            m = self.maxtime.drop_duplicates(subset=['TimeStamp', 'DeviceID', 'MT'])
+            df = pd.merge(df, m, how='left')
+            # Categorize Faults
+            df['Fault_Type'] = self.fault_category(df)
+            df['Fault_Type'] = df['Fault_Type'].astype('category')
+            df = df[['TimeStamp', 'DeviceID', 'MT', 'Total', 'Fault_Type']].set_index(['TimeStamp', 'DeviceID', 'MT', 'Fault_Type'])
+            return df.sort_index(level=0)
+
+    def update_data(self):
+            '''Automatically updates data from the Last_Run date through yesterday'''
+            # Read the Last_Run/Actuations date
+            with open('Last_Run/DetectorHealth.txt', 'r') as file:
+                    last_run = datetime.datetime.strptime(file.read(), '%Y-%m-%d').date()
+            # Update data 1 day at a time through yesterday
+            while last_run < self.today - datetime.timedelta(days=1):
+                    date = str(last_run + datetime.timedelta(days=1))
+                    print(f'\nWORKING ON: Detector Health {date} at: {datetime.datetime.now()}')
+                    self.load_all_data(days=35, date=date)
+                    df = self.cleanse()
+                    df = self.transform(df)
+                    df.loc[date].to_parquet(f'DetectorHealth/{date}.parquet')
+                    # After successful run, update Last_Run/Actuations for next time
+                    with open('Last_Run/DetectorHealth.txt', 'w') as file:
+                            file.write(date)
+                    # Now on to the next day
+                    last_run += datetime.timedelta(days=1)
