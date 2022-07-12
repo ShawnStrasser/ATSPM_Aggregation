@@ -31,213 +31,117 @@ class Get_SQL_Data():
     def __init__(self, server='ODOTDWQUERYPROD', database='STG_ITS_SQL_MAXVIEW_EVENTLOG'):
 
         self.today = datetime.datetime.now().date()
-        self.connection = pyodbc.connect('Driver={SQL Server Native Client 11.0};' +\
-            f'Server={server};Database={database};Trusted_Connection=yes;')
-    
+        self.path_ = '//scdata2/signalshar/Data_Analysis/Traffic_Signal_Data_and_Analytics/'
+        self.server = server
+        self.database = database    
         # Dictionary of avaiable functions for downloading different data types
         self.dict = {
             'Actuations' : self.actuations,
             'Communications' : self.communications,
             'MaxOuts' : self.maxouts,
-            'MaxTimeFaults' : self.maxtime_faults
+            'MaxTimeFaults' : self.maxtime_faults,
+            'Splits' : self.splits,
+            'Ped' : self.ped,
+            'Coordination' : self.coordination
             }
 
-    def run_query(self, sql, index_col):
+    def run_query(self, sql):
         # Turn off any SQL warnings that sometimes cause problems for Pandas
         sql = f'SET NOCOUNT ON; SET ANSI_WARNINGS OFF; {sql}'
-        return(pd.read_sql_query(sql, self.connection, index_col=index_col))
+        connection = pyodbc.connect('Driver={SQL Server Native Client 11.0};' +\
+            f'Server={self.server};Database={self.database};Trusted_Connection=yes;')
+        data = pd.read_sql_query(sql, connection)
+        connection.close()
+        return data
 
     def update_data(self, data_type):
         '''Automatically updates data from the Last_Run date through yesterday'''
         function = self.dict[data_type]
         # Read the Last_Run/Actuations date
-        with open(f'Last_Run/{data_type}.txt', 'r') as file:
+        with open(f'{self.path_}Last_Run/{data_type}.txt', 'r') as file:
             last_run = datetime.datetime.strptime(file.read(), '%Y-%m-%d').date()
         # Update data 1 day at a time through yesterday
         while last_run < self.today - datetime.timedelta(days=1):
             start = str(last_run + datetime.timedelta(days=1))
             end = str(last_run + datetime.timedelta(days=2))
             print(f'\nWORKING ON: {data_type} {start} at: {datetime.datetime.now()}')
-            function(start, end).to_parquet(f'{data_type}/{start}.parquet')
+            function(start, end).to_parquet(f'//scdata2/signalshar/Data_Analysis/Data/Performance/{data_type}/{start}.parquet')
             # After successful run, update Last_Run/Actuations for next time
-            with open(f'Last_Run/{data_type}.txt', 'w') as file:
+            with open(f'{self.path_}Last_Run/{data_type}.txt', 'w') as file:
                 file.write(start)
             # Now on to the next day
             last_run += datetime.timedelta(days=1)
             # Give the server a rest...
-            time.sleep(2)
+            time.sleep(1)
 
-    def testing(self):
-        index_col = ['TimeStamp', 'DeviceId', 'EventId']
-        sql = 'select top 3 * from ASCEvents'
-        return(self.run_query(sql, index_col))
+    def read_sql(self, file, start, end):
+        '''Opens a .sql file and replaces variables @start & @end with input variables'''
+        with open(f'{self.path_}SQL/{file}.sql', 'r') as r:
+            sql = r.read().replace('@start', f"'{start}'").replace('@end', f"'{end}'")
+        return sql
 
     def actuations(self, start, end):
-        '''Can be manually run to return actuations between start and end datetime parameters'''
-        index_col = ['TimeStamp', 'DeviceID', 'MT']
-        sql = f'''
-        --Aggregate Detector Actuations
-        SELECT
-            dateadd(minute, datediff(minute,0,TimeStamp)/15 * 15, 0) as TimeStamp,
-            DeviceID,
-            Parameter AS MT,
-            COUNT(*) AS Total
-        FROM 
-            (SELECT DISTINCT *
-            FROM ASCEvents 
-            WHERE EventID = 82 AND TimeStamp >= '{start}' AND TimeStamp < '{end}') q
-        GROUP BY dateadd(minute, datediff(minute,0,TimeStamp)/15 * 15, 0), DeviceID, Parameter
+        '''Return aggregate actuations between start and end timestamps
+        Indexing and optimized datatypes are used to reduce memory consumption
         '''
-        return(self.run_query(sql, index_col))
+        index_col = ['TimeStamp', 'DeviceID', 'MT']
+        sql = self.read_sql(file='Actuations', start=start, end=end)
+        data = self.run_query(sql)
+        data = data.astype({'DeviceID':'uint16', 'MT':'uint8', 'Total':'uint16'}).set_index(index_col)
+        return data.sort_index(level=0) #sorted data takes less space
 
     def communications(self, start, end):
-        index_col = ['TimeStamp', 'DeviceID', 'EventID']
-        sql = f'''
-        --Communications
-        --No need to remove duplicates since aggregtion method is average
-        SELECT
-            dateadd(minute, datediff(minute,0,TimeStamp)/15 * 15, 0) as TimeStamp,
-            DeviceID,
-            EventID,
-            AVG(CONVERT(FLOAT,Parameter)) AS Average
-        FROM
-            ASCEvents
-        WHERE
-            EventID IN(400,503,502)
-            AND TimeStamp >= '{start}'
-            AND TimeStamp < '{end}'
-        GROUP BY
-            dateadd(minute, datediff(minute,0,TimeStamp)/15 * 15, 0),
-            DeviceID,
-            EventID
+        '''Return averaged communication stats between start and end timestamps
+        Indexing and optimized datatypes are used to reduce memory consumption
         '''
-        return(self.run_query(sql, index_col))
+        index_col = ['TimeStamp', 'DeviceID', 'EventID']
+        sql = self.read_sql(file='Communications', start=start, end=end)
+        data = self.run_query(sql)
+        data = data.astype({'DeviceID':'uint16', 'Average':'float32', 'EventID':'category'}).set_index(index_col)
+        return data.sort_index(level=0) #sorted data takes less space
 
     def maxouts(self, start, end):
-        index_col = ['TimeStamp', 'DeviceID', 'Phase']
-        sql = f'''
-        --MaxOuts
-        SELECT
-            *,
-            IsNull((CONVERT(FLOAT, MaxOut + ForceOff)) / NullIf(MaxOut + ForceOff + GapOut,0),0) as Pct_MaxOut
-        FROM
-            (SELECT
-                TimeStamp,
-                DeviceID,
-                Parameter as Phase, 
-                IsNull([4], 0) AS GapOut,
-                IsNull([5],0) AS MaxOut,
-                IsNull([6],0) AS ForceOff,
-                IsNull([43],0) AS PhaseCall
-            FROM
-                (SELECT
-                    dateadd(minute, datediff(minute,0,TimeStamp)/15 * 15, 0) as TimeStamp,
-                    DeviceID,
-                    EventID,
-                    Parameter,
-                    COUNT(*) AS Total
-                FROM
-                    (SELECT DISTINCT *
-                    FROM ASCEvents
-                    WHERE
-                        EventID IN(4,5,6,43)
-                        AND TimeStamp >= '{start}'
-                        AND TimeStamp < '{end}') t
-                GROUP BY
-                    dateadd(minute, datediff(minute,0,TimeStamp)/15 * 15, 0),
-                    DeviceID,
-                    EventID,
-                    Parameter
-                ) q
-                PIVOT( SUM(Total) FOR EventID IN([4], [5], [6], [43])) p
-            ) z
+        '''Return averaged phase termination stats between start and end timestamps
+        Indexing and optimized datatypes are used to reduce memory consumption
         '''
-        return(self.run_query(sql, index_col))
+        index_col = ['TimeStamp', 'DeviceID', 'Phase']
+        sql = self.read_sql(file='MaxOuts', start=start, end=end)
+        data = self.run_query(sql)
+        data = data.astype({'DeviceID':'uint16', 'Phase':'category', 'GapOut':'uint16', 'MaxOut':'uint16', 'ForceOff':'uint16', 'PhaseCall':'uint16', 'Pct_MaxOut':'float32'})
+        data = data.set_index(index_col)
+        return data.sort_index(level=0) #sorted data takes less space        
 
     def maxtime_faults(self, start, end):
         index_col = ['TimeStamp', 'DeviceID']
-        sql = f'''
-        DECLARE @start AS DATETIME = '{start}';
-        DECLARE @end AS DATETIME = '{end}';
-        -----------------DATE TABLE---------------------------
-        DECLARE @row DATETIME = @start
-        CREATE TABLE #T (TimeStamp DATETIME)
-        WHILE @row < @end
-        BEGIN
-        INSERT INTO #T
-        VALUES (@row)
-        SET @row = DATEADD(MINUTE, 15, @row)
-        END;
-        -----------------ON TABLE---------------------------
-        --All the shorted loop events
-        SELECT DISTINCT
-            dateadd(minute, datediff(minute,0,TimeStamp)/15 * 15, 0) as TimeStamp, 
-            DeviceID,
-            EventID,
-            Parameter	
-        INTO #ON
-        FROM ASCEvents 
-        WHERE EventID=87 AND TimeStamp >= @start AND TimeStamp < @end
-        --and this table of distinct deviceid/detector pairs helps makes things fast as a filter in next step
-        SELECT DISTINCT DeviceID as D, Parameter as P INTO #List FROM #ON
-        -----------------ALL TABLE---------------------------
-        --Union the detector off/restored events
-        SELECT DISTINCT
-            dateadd(minute, datediff(minute,0,TimeStamp)/15 * 15, 0) as TimeStamp, 
-            DeviceID,
-            83 AS EventID, --don't care if it's a detector restored or detector off event. looking at both incase missing event
-            Parameter
-        INTO #ALL
-        FROM ASCEvents
-        JOIN #List ON #List.D = ASCEvents.DeviceId AND #List.P = ASCEvents.Parameter
-        WHERE EventID IN(81, 83) AND TimeStamp >= @start AND TimeStamp < @end
-        UNION ALL
-        SELECT * FROM #ON
-        -----------------JOIN TABLE---------------------------
-        --join date table, ON, and OFF tables
-        SELECT DISTINCT #T.TimeStamp, DeviceID, Parameter
-        INTO #D
-        FROM #T, #ALL
+        sql = self.read_sql(file='MaxTimeFaults', start=start, end=end)
+        data = self.run_query(sql)
+        data = data.astype({'DeviceID':'uint16', 'Parameter':'uint8', 'EventID':'category'})
+        data = data.set_index(index_col)
+        return data.sort_index(level=0) #sorted data takes less space
 
-        SELECT #D.TimeStamp, #D.DeviceId, EventID, #D.Parameter
-        INTO #FINAL
-        FROM #D
-        left join #ALL
-        ON #ALL.TimeStamp = #D.TimeStamp and #ALL.DeviceID=#D.DeviceID and #ALL.Parameter=#D.Parameter
-        ORDER BY DeviceID, Parameter, TimeStamp
+    def ped(self, start, end):
+        index_col = ['TimeStamp', 'DeviceID', 'Phase']
+        sql = self.read_sql(file='Ped', start=start, end=end)
+        data = self.run_query(sql)
+        data = data.astype({'DeviceID':'uint16', 'Phase':'category', 'PedServices':'uint16', 'PedActuation':'uint16'})
+        data = data.set_index(index_col)
+        return data.sort_index(level=0) #sorted data takes less space 
 
-        SELECT 
-            TimeStamp, 
-            DeviceID,
-            CASE WHEN EventID IS NULL THEN 
-            (SELECT TOP 1 EventID FROM #FINAL WHERE TimeStamp < F.TimeStamp AND EventID IS NOT NULL AND DeviceID=F.DeviceId AND Parameter=F.Parameter ORDER BY TimeStamp DESC) --OVER (PARTITION BY F.DeviceID)
-            ELSE EventID 
-            END AS EventID,
-            Parameter
-        INTO #STUCKON
-        FROM #FINAL F
-        -----------------FINAL RESULTS---------------------------
-        --Combine Stuck On events with Erratic events
-        SELECT * FROM #STUCKON
-        WHERE EventID=87
-        UNION ALL
-        SELECT DISTINCT
-            dateadd(minute, datediff(minute,0,TimeStamp)/15 * 15, 0) as TimeStamp, 
-            DeviceID,
-            EventID, 
-            Parameter
-        FROM ASCEvents
-        WHERE EventID=88 AND TimeStamp >= @start AND TimeStamp < @end
-        DROP TABLE #ALL
-        DROP TABLE #T
-        DROP TABLE #List
-        DROP TABLE #D
-        DROP TABLE #FINAL
-        DROP TABLE #ON
-        DROP TABLE #STUCKON
-        '''
-        return(self.run_query(sql, index_col))
+    def splits(self, start, end):
+        index_col = ['TimeStamp', 'DeviceID', 'EventID']
+        sql = self.read_sql(file='Splits', start=start, end=end)
+        data = self.run_query(sql)
+        data = data.astype({'DeviceID':'uint16', 'EventID':'category', 'Services':'uint16', 'Average_Split':'uint16'})
+        data = data.set_index(index_col)
+        return data.sort_index(level=0) #sorted data takes less space 
 
+    def coordination(self, start, end):
+        index_col = ['15-Minute_TimeStamp', 'DeviceID', 'EventID']
+        sql = self.read_sql(file='Coordination', start=start, end=end)
+        data = self.run_query(sql)
+        data = data.astype({'DeviceID':'uint16', 'EventID':'category', 'Parameter':'uint16'})
+        data = data.set_index(index_col)
+        return data.sort_index(level=0) #sorted data takes less space 
 
 class Get_RITIS_Data():
     '''
@@ -246,11 +150,13 @@ class Get_RITIS_Data():
     '''
     def __init__(self, driver_path="C:\Program Files (x86)\msedgedriver.exe"):
         self.today = datetime.datetime.now().date()
+        self.path_ = '//scdata2/signalshar/Data_Analysis/Traffic_Signal_Data_and_Analytics/'
         self.driver_path=driver_path
         self.url='https://pda.ritis.org/suite/download/'
         self.url2='https://pda.ritis.org/suite/my-history/'
         self.driver=webdriver.Edge(self.driver_path)
         # Define xpath notations to be used
+        self.select_XD = '//*[@id="SimpleDropDown-SegmentTypeDropDown"]/div/div' # Need to select INRIX from drop down!
         self.select_segment_codes = '/html/body/main/div/div[1]/div/div[1]/form/ol/li[2]/div[2]/div/div[2]/div[1]/div[3]/div/div'
         self.XD_codes_text = '/html/body/main/div/div[1]/div/div[1]/form/ol/li[2]/div[2]/div/div[2]/div[2]/div[3]/div/div/div/div/textarea'
         self.select_add_segments = '/html/body/main/div/div[1]/div/div[1]/form/ol/li[2]/div[2]/div/div[2]/div[2]/div[3]/div/div/div/div/div[2]/div'
@@ -430,7 +336,7 @@ class Get_RITIS_Data():
 
     def update_data(self):
         '''Automatically updates data from the Last_Run date through yesterday'''
-        with open('Last_Run/RITIS.txt', 'r') as file:
+        with open(f'{self.path_}Last_Run/RITIS.txt', 'r') as file:
             last_run = datetime.datetime.strptime(file.read(), '%Y-%m-%d').date()
         # Update data 1 day at a time through yesterday
         while last_run < self.today - datetime.timedelta(days=1):
@@ -438,7 +344,7 @@ class Get_RITIS_Data():
             print(f'\nWORKING ON: RITIS {str(start)} at: {datetime.datetime.now()}')
             self.main(date=start)
             # After successful run, update Last_Run/RITIS for next time
-            with open('Last_Run/RITIS.txt', 'w') as file:
+            with open(f'{self.path_}Last_Run/RITIS.txt', 'w') as file:
                 file.write(str(start))
             # Now on to the next day
             last_run += datetime.timedelta(days=1)
@@ -454,6 +360,7 @@ class Analytics():
 
     def __init__(self):
         self.today = datetime.datetime.now().date()
+        self.path_ = '//scdata2/signalshar/Data_Analysis/Traffic_Signal_Data_and_Analytics/'
 
     def load_data(self, folder, date=str(datetime.datetime.now().date()), num_days = 35):
         '''Loads parquet files from selected folder and date range'''
@@ -545,142 +452,141 @@ class Analytics():
 class DetectorHealth(Analytics):
         
     def load_all_data(self, days=35, date='2022-03-07'):
-            '''Load each data type'''
-            def quick_load(folder, date, num_days):
-                    try:
-                            now = datetime.datetime.now()
-                            df = self.load_data(folder, date, num_days)
-                            #print(f'{folder} took {datetime.datetime.now() - now} seconds')
-                            return df.reset_index()
-                    except Exception:
-                            print(f'{folder} not loaded, missing data')
-
-            self.actuations = quick_load(folder='Actuations', date=date, num_days=days).astype({'DeviceID':'uint16', 'MT':'uint8', 'Total':'UInt16'}) #UInt handles NaN, for when missing values are added in
-            self.comm = quick_load(folder='Communications', date=date, num_days=days).astype({'DeviceID':'uint16', 'Average':'float32', 'EventID':'category'})
-            #self.maxout = quick_load(folder='MaxOuts', date=date, num_days=days)#add datatypes later
-            self.maxtime = quick_load(folder='MaxTimeFaults', date=date, num_days=days).rename(columns={'Parameter': 'MT', 'EventID':'Fault_MaxTime'}).astype({'DeviceID':'uint16', 'MT':'uint8', 'Fault_MaxTime':'category'})
+        '''Load each data type'''
+        def quick_load(folder, date, num_days):
+                try:
+                        now = datetime.datetime.now()
+                        df = self.load_data(folder, date, num_days)
+                        #print(f'{folder} took {datetime.datetime.now() - now} seconds')
+                        return df.reset_index()
+                except Exception:
+                        print(f'{folder} not loaded, missing data')
+        path = '//scdata2/signalshar/Data_Analysis/Data/Performance'
+        self.actuations = quick_load(folder=f'{path}/Actuations', date=date, num_days=days).astype({'DeviceID':'uint16', 'MT':'uint8', 'Total':'UInt16'}) #UInt handles NaN, for when missing values are added in
+        self.comm = quick_load(folder=f'{path}/Communications', date=date, num_days=days).astype({'DeviceID':'uint16', 'Average':'float32', 'EventID':'category'})
+        #self.maxout = quick_load(folder=f'{path}/MaxOuts', date=date, num_days=days)#add datatypes later
+        self.maxtime = quick_load(folder=f'{path}/MaxTimeFaults', date=date, num_days=days).rename(columns={'Parameter': 'MT', 'EventID':'Fault_MaxTime'}).astype({'DeviceID':'uint16', 'MT':'uint8', 'Fault_MaxTime':'category'})
 
     def cleanse(self):
-            # Get distinct DeviceID and Parameter pairs from Actuations
-            detector_pairs = self.actuations[['DeviceID', 'MT']].drop_duplicates()
-            # Get table of time periods with zero comm loss for each device
-            comm = self.comm[self.comm['EventID'] == 502] #EventID 502 is %comm loss
-            comm = comm[comm['Average'] == 0] #Filter to %comm loss is zero
-            comm = comm[['TimeStamp', 'DeviceID']]
-            # Generate timestamp for each detector where the signal had no comm loss
-            # This is meant to be a cross product between timestamps with zero comm loss and each detector at a given signal
-            # This table represents each time period where there should have been good data recorded
-            Actuations_All = pd.merge(comm, detector_pairs)
-            #Actuations_All[(Actuations_All['DeviceID']==2) & (Actuations_All['MT']==1)].sort_values('TimeStamp', ascending=False)
-            # Merge previous table with actual actuations. There will be NaN's where there were no actuations (due to no volume or detector faults)
-            Actuations_All = pd.merge(Actuations_All, self.actuations, how="left")
-            # Fill NAs with zeros. Keep datatype as int
-            Actuations_All = Actuations_All.fillna(0)
-            Actuations_All['Total'] = Actuations_All['Total'].astype('uint16') #back to Numpy dtype to have Numpy operations work
-            del self.actuations
-            del self.comm
-            return Actuations_All
+        # Get distinct DeviceID and Parameter pairs from Actuations
+        detector_pairs = self.actuations[['DeviceID', 'MT']].drop_duplicates()
+        # Get table of time periods with zero comm loss for each device
+        comm = self.comm[self.comm['EventID'] == 502] #EventID 502 is %comm loss
+        comm = comm[comm['Average'] == 0] #Filter to %comm loss is zero
+        comm = comm[['TimeStamp', 'DeviceID']]
+        # Generate timestamp for each detector where the signal had no comm loss
+        # This is meant to be a cross product between timestamps with zero comm loss and each detector at a given signal
+        # This table represents each time period where there should have been good data recorded
+        Actuations_All = pd.merge(comm, detector_pairs)
+        #Actuations_All[(Actuations_All['DeviceID']==2) & (Actuations_All['MT']==1)].sort_values('TimeStamp', ascending=False)
+        # Merge previous table with actual actuations. There will be NaN's where there were no actuations (due to no volume or detector faults)
+        Actuations_All = pd.merge(Actuations_All, self.actuations, how="left")
+        # Fill NAs with zeros. Keep datatype as int
+        Actuations_All = Actuations_All.fillna(0)
+        Actuations_All['Total'] = Actuations_All['Total'].astype('uint16') #back to Numpy dtype to have Numpy operations work
+        del self.actuations
+        del self.comm
+        return Actuations_All
 
     def GEH(self, df):
-            '''Calculates GEH Statistic between Total and Median
-            https://en.wikipedia.org/wiki/GEH_statistic'''
-            M = df['Total']
-            C = df['Median']
-            sign = np.sign(M - C)
-            GEH = np.where(C == 0, 0, ((2 * (M - C)**2) / (M + C))**0.5)
-            # add sign back to GEH for use in Z-score calc
-            return np.where(C == 0, np.NaN, GEH * sign)
+        '''Calculates GEH Statistic between Total and Median
+        https://en.wikipedia.org/wiki/GEH_statistic'''
+        M = df['Total']
+        C = df['Median']
+        sign = np.sign(M - C)
+        GEH = np.where(C == 0, 0, ((2 * (M - C)**2) / (M + C))**0.5)
+        # add sign back to GEH for use in Z-score calc
+        return np.where(C == 0, np.NaN, GEH * sign)
 
     def dims(self):
-            '''Get traffic signal dimension table with names and parent groups'''
-            sql = 'SELECT ID as DeviceID, ParentID FROM GroupableElements WHERE ParentID IS NOT NULL'
-            index_col=['DeviceID']
-            server='SP2SQLMAX101'
-            database='MaxView_1.9.0.744'
-            return Get_SQL_Data(server=server, database=database).run_query(sql=sql, index_col=index_col).reset_index().astype({'DeviceID':'uint16', 'ParentID':'category'})
+        '''Get traffic signal dimension table with names and parent groups'''
+        sql = 'SELECT ID as DeviceID, ParentID FROM GroupableElements WHERE ParentID IS NOT NULL'
+        server='SP2SQLMAX101'
+        database='MaxView_1.9.0.744'
+        return Get_SQL_Data(server=server, database=database).run_query(sql=sql).astype({'DeviceID':'uint16', 'ParentID':'category'})
 
     def normalize(self, df):
-            '''Returns indexd colum of normalized valuse, using Vectorization
-            NO INDEXED COLUMNS'''
-            mean = df.groupby(['TimeStamp', 'ParentID'])['GEH'].transform("mean")
-            std = df.groupby(['TimeStamp', 'ParentID'])['GEH'].transform("std")
-            return (df['GEH'] - mean) / std
+        '''Returns indexd colum of normalized valuse, using Vectorization
+        NO INDEXED COLUMNS'''
+        mean = df.groupby(['TimeStamp', 'ParentID'])['GEH'].transform("mean")
+        std = df.groupby(['TimeStamp', 'ParentID'])['GEH'].transform("std")
+        return (df['GEH'] - mean) / std
 
     def ratio_faults(self, df):
-            '''Calculates ratio of Total to the Average for each detector on each day
-            The average is limited to periods from 6am to 6pm
-            Returns weather the ratio is a fault, given conditions'''
-            df2 = df.copy()
-            # Need date column for groupby
-            df2['Date'] = df2['TimeStamp'].dt.date
-            # Need temporary Total column for averaging Total between 6am and 6pm
-            df2['Day_Total'] = np.where(df2['DayPeriod'] >= 25, np.where(df2['DayPeriod'] < 73, df2['Total'], np.NaN), np.NaN)
-            # Average between 6am and 6pm
-            mean = df2.groupby(['DeviceID', 'MT', 'Date'])['Day_Total'].transform("mean")
-            ratio = df2['Total'] / mean
-            # Set conditions for a fault. These numbers can be adjusted
-            conditions = [
-                    (ratio >= 3) & (df2['Total'] > 40),
-                    (df2['DayPeriod'] < 17) & (ratio > 0.75) & (df2['Total'] > 10)
-                    ]
-            choices = [True, True]
-            return np.select(conditions, choices, default=False)
+        '''Calculates ratio of Total to the Average for each detector on each day
+        The average is limited to periods from 6am to 6pm
+        Returns weather the ratio is a fault, given conditions'''
+        df2 = df.copy()
+        # Need date column for groupby
+        df2['Date'] = df2['TimeStamp'].dt.date
+        # Need temporary Total column for averaging Total between 6am and 6pm
+        df2['Day_Total'] = np.where(df2['DayPeriod'] >= 25, np.where(df2['DayPeriod'] < 73, df2['Total'], np.NaN), np.NaN)
+        # Average between 6am and 6pm
+        mean = df2.groupby(['DeviceID', 'MT', 'Date'])['Day_Total'].transform("mean")
+        ratio = df2['Total'] / mean
+        # Set conditions for a fault. These numbers can be adjusted
+        conditions = [
+                (ratio >= 3) & (df2['Total'] > 40),
+                (df2['DayPeriod'] < 17) & (ratio > 0.75) & (df2['Total'] > 10)
+                ]
+        choices = [True, True]
+        return np.select(conditions, choices, default=False)
 
     def fault_category(self, df):
-            '''Categorizes the type of fault'''
-            conditions = [
-                    (df['Fault_MaxTime']==87),
-                    (df['Fault_MaxTime']==88),
-                    (df['Fault_Z_score']==True),
-                    (df['Fault_Ratio']==True)
-                    ]
-            choices = ['Stuck On', 'Erratic', 'Anomaly', 'Excessive']
-            return np.select(conditions, choices, default='None')
+        '''Categorizes the type of fault'''
+        conditions = [
+                (df['Fault_MaxTime']==87),
+                (df['Fault_MaxTime']==88),
+                (df['Fault_Z_score']==True),
+                (df['Fault_Ratio']==True)
+                ]
+        choices = ['Stuck On', 'Erratic', 'Anomaly', 'Excessive']
+        return np.select(conditions, choices, default='None')
 
     def seasonal_median(self, df):
-            '''Calculate the median within each seasonal period'''
-            # Add seasonal periods
-            df['WeekPeriod'] = df['TimeStamp'].dt.isocalendar().day.astype('int8')
-            df['DayPeriod'] = ((df['TimeStamp'].dt.hour * 60 + df['TimeStamp'].dt.minute)/15 + 1).astype('int8')
-            # Return median
-            return df.groupby(['DeviceID', 'MT', 'WeekPeriod', 'DayPeriod'])['Total'].transform('median')        
+        '''Calculate the median within each seasonal period'''
+        # Add seasonal periods
+        df['WeekPeriod'] = df['TimeStamp'].dt.isocalendar().day.astype('int8')
+        df['DayPeriod'] = ((df['TimeStamp'].dt.hour * 60 + df['TimeStamp'].dt.minute)/15 + 1).astype('int8')
+        # Return median
+        return df.groupby(['DeviceID', 'MT', 'WeekPeriod', 'DayPeriod'])['Total'].transform('median')        
 
     def transform(self, df):
-            '''Apply transformation steps to classify outliers
-            and return final dataframe'''
-            # Calculate median and GEH per detector
-            df['Median'] = self.seasonal_median(df).astype('uint16')
-            df['GEH'] = self.GEH(df).astype('float16')
-            # Add ParentID from MaxView, calc Z-scores grouped by ParentID
-            df = pd.merge(df, self.dims())
-            df['Z_Score'] = self.normalize(df).astype('float16')
-            df['Fault_Z_score'] = np.where(abs(df['Z_Score']) >= 3.5, np.where(abs(df['GEH']) > 5, True, False), False)
-            # Find "Ratio Faults" due to excessive nighttime actuations
-            df['Fault_Ratio'] = self.ratio_faults(df)
-            # Add MaxTime Faults. Drop duplicates in case there are "Stuck On" and "Erratic" during same timestamp
-            m = self.maxtime.drop_duplicates(subset=['TimeStamp', 'DeviceID', 'MT'])
-            df = pd.merge(df, m, how='left')
-            # Categorize Faults
-            df['Fault_Type'] = self.fault_category(df)
-            df['Fault_Type'] = df['Fault_Type'].astype('category')
-            df = df[['TimeStamp', 'DeviceID', 'MT', 'Total', 'Fault_Type']].set_index(['TimeStamp', 'DeviceID', 'MT', 'Fault_Type'])
-            return df.sort_index(level=0)
+        '''Apply transformation steps to classify outliers
+        and return final dataframe'''
+        # Calculate median and GEH per detector
+        df['Median'] = self.seasonal_median(df).astype('uint16')
+        df['GEH'] = self.GEH(df).astype('float16')
+        # Add ParentID from MaxView, calc Z-scores grouped by ParentID
+        df = pd.merge(df, self.dims())
+        df['Z_Score'] = self.normalize(df).astype('float16')
+        df['Fault_Z_score'] = np.where(abs(df['Z_Score']) >= 3.5, np.where(abs(df['GEH']) > 5, True, False), False)
+        # Find "Ratio Faults" due to excessive nighttime actuations
+        df['Fault_Ratio'] = self.ratio_faults(df)
+        # Add MaxTime Faults. Drop duplicates in case there are "Stuck On" and "Erratic" during same timestamp
+        m = self.maxtime.drop_duplicates(subset=['TimeStamp', 'DeviceID', 'MT'])
+        df = pd.merge(df, m, how='left')
+        # Categorize Faults
+        df['Fault_Type'] = self.fault_category(df)
+        df['Fault_Type'] = df['Fault_Type'].astype('category')
+        df = df[['TimeStamp', 'DeviceID', 'MT', 'Total', 'Fault_Type']].set_index(['TimeStamp', 'DeviceID', 'MT', 'Fault_Type'])
+        return df.sort_index(level=0)
 
     def update_data(self):
-            '''Automatically updates data from the Last_Run date through yesterday'''
-            # Read the Last_Run/Actuations date
-            with open('Last_Run/DetectorHealth.txt', 'r') as file:
-                    last_run = datetime.datetime.strptime(file.read(), '%Y-%m-%d').date()
-            # Update data 1 day at a time through yesterday
-            while last_run < self.today - datetime.timedelta(days=1):
-                    date = str(last_run + datetime.timedelta(days=1))
-                    print(f'\nWORKING ON: Detector Health {date} at: {datetime.datetime.now()}')
-                    self.load_all_data(days=35, date=date)
-                    df = self.cleanse()
-                    df = self.transform(df)
-                    df.loc[date].to_parquet(f'DetectorHealth/{date}.parquet')
-                    # After successful run, update Last_Run/Actuations for next time
-                    with open('Last_Run/DetectorHealth.txt', 'w') as file:
-                            file.write(date)
-                    # Now on to the next day
-                    last_run += datetime.timedelta(days=1)
+        '''Automatically updates data from the Last_Run date through yesterday'''
+        # Read the Last_Run/Actuations date
+        with open('Last_Run/DetectorHealth.txt', 'r') as file:
+                last_run = datetime.datetime.strptime(file.read(), '%Y-%m-%d').date()
+        # Update data 1 day at a time through yesterday
+        while last_run < self.today - datetime.timedelta(days=1):
+                date = str(last_run + datetime.timedelta(days=1))
+                print(f'\nWORKING ON: Detector Health {date} at: {datetime.datetime.now()}')
+                self.load_all_data(days=35, date=date)
+                df = self.cleanse()
+                df = self.transform(df)
+                df.loc[date].to_parquet(f'//scdata2/signalshar/Data_Analysis/Data/Performance/DetectorHealth/{date}.parquet')
+                # After successful run, update Last_Run/Actuations for next time
+                with open('Last_Run/DetectorHealth.txt', 'w') as file:
+                        file.write(date)
+                # Now on to the next day
+                last_run += datetime.timedelta(days=1)
