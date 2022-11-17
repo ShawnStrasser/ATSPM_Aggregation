@@ -14,6 +14,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
+#from msedge.selenium_tools import Edge, EdgeOptions #needed to pip install msedge-selenium-tools selenium==3.141
 import keyring
 import pyperclip
 import zipfile
@@ -31,18 +32,20 @@ class Get_SQL_Data():
     def __init__(self, server='ODOTDWQUERYPROD', database='STG_ITS_SQL_MAXVIEW_EVENTLOG'):
 
         self.today = datetime.datetime.now().date()
-        self.path_ = '//scdata2/signalshar/Data_Analysis/Traffic_Signal_Data_and_Analytics/'
+        self.path_ = '//scdata2/signalshar/Data_Analysis/Traffic_Signal_Data_and_Analytics/' #this file location
+        self.path_save = '//scdata2/signalshar/Data_Analysis/Data/Performance/' #destination to save data to
         self.server = server
         self.database = database    
         # Dictionary of avaiable functions for downloading different data types
-        self.dict = {
+        self.dict_ = {
             'Actuations' : self.actuations,
             'Communications' : self.communications,
             'MaxOuts' : self.maxouts,
             'MaxTimeFaults' : self.maxtime_faults,
             'Splits' : self.splits,
             'Ped' : self.ped,
-            'Coordination' : self.coordination
+            'Coordination' : self.coordination,
+            'Unique_Ped_Actuations' : self.unique_ped
             }
 
     def run_query(self, sql):
@@ -56,7 +59,7 @@ class Get_SQL_Data():
 
     def update_data(self, data_type):
         '''Automatically updates data from the Last_Run date through yesterday'''
-        function = self.dict[data_type]
+        function = self.dict_[data_type]
         # Read the Last_Run/Actuations date
         with open(f'{self.path_}Last_Run/{data_type}.txt', 'r') as file:
             last_run = datetime.datetime.strptime(file.read(), '%Y-%m-%d').date()
@@ -65,7 +68,7 @@ class Get_SQL_Data():
             start = str(last_run + datetime.timedelta(days=1))
             end = str(last_run + datetime.timedelta(days=2))
             print(f'\nWORKING ON: {data_type} {start} at: {datetime.datetime.now()}')
-            function(start, end).to_parquet(f'//scdata2/signalshar/Data_Analysis/Data/Performance/{data_type}/{start}.parquet')
+            function(start, end).to_parquet(f'{self.path_save}{data_type}/{start}.parquet')
             # After successful run, update Last_Run/Actuations for next time
             with open(f'{self.path_}Last_Run/{data_type}.txt', 'w') as file:
                 file.write(start)
@@ -127,6 +130,14 @@ class Get_SQL_Data():
         data = data.set_index(index_col)
         return data.sort_index(level=0) #sorted data takes less space 
 
+    def unique_ped(self, start, end):
+        index_col = ['TimeStamp', 'DeviceID', 'Phase']
+        sql = self.read_sql(file='Unique_Ped_Actuations', start=start, end=end)
+        data = self.run_query(sql)
+        data = data.astype({'DeviceID':'uint16', 'Phase':'category', 'Unique_Actuations':'uint16'})
+        data = data.set_index(index_col)
+        return data.sort_index(level=0) #sorted data takes less space 
+        
     def splits(self, start, end):
         index_col = ['TimeStamp', 'DeviceID', 'EventID']
         sql = self.read_sql(file='Splits', start=start, end=end)
@@ -141,12 +152,134 @@ class Get_SQL_Data():
         data = self.run_query(sql)
         data = data.astype({'DeviceID':'uint16', 'EventID':'category', 'Parameter':'uint16'})
         data = data.set_index(index_col)
-        return data.sort_index(level=0) #sorted data takes less space 
+        return data.sort_index(level=0) #sorted data takes less space
+
+
+class Aggregate_ATSPMs(Get_SQL_Data): 
+
+    def __init__(self, server='SP2SQLMAX101', database='MAXVIEW_EVENTLOG'):
+        Get_SQL_Data.__init__(self, server, database)
+        # Dictionary of detector function labels and types
+        self.dict = {
+            'P' : self.split_fail,
+            'Presence' : self.split_fail,
+            'Yellow Red' : self.yellow_red,
+            'YellowRed' : self.yellow_red,
+            }
+
+    def load_config(self):
+        df = pd.read_excel(f'{self.path_save}DetConfig.xlsx', converters={'TSSU ID':str}) # .xlsx is deprecated, but works with xlrd==1.2.0
+        df = df[(df['Phase'].notnull()) & (df['Det'].notnull())].sort_values('TSSU ID')
+        return df
+    
+    def save_config(self, df):
+        with pd.ExcelWriter(f'{self.path_save}DetConfig.xlsx') as writer: #lets turn this into a function later
+            df.to_excel(writer, index=False)
+    
+    def read_sql(self, file, start, end, TSSU, Phase, Det):
+        '''Opens a .sql file and replaces SQL variables with function input variables'''
+        with open(f'{self.path_}SQL/{file}.sql', 'r') as r:
+            sql = r.read().replace('@start', f"'{start}'").replace('@end', f"'{end}'")
+            sql = sql.replace('@TSSU', f"'{TSSU}'")
+            sql = sql.replace('@Phase', Phase).replace('@Det', Det)
+            if self.server == 'ODOTDWQUERYPROD':
+                sql = sql.replace('[MaxView_1.9.0.744].[dbo].', '')
+        return sql
+
+    def split_fail(self, start, end, TSSU, Phase, Det):
+        '''Gets aggregate split failures for input phase/detector, saves it to parquet file'''
+        ## Temp Code to return DeviceID since it's broken right now
+        connection2 = pyodbc.connect('Driver={SQL Server Native Client 11.0};' +\
+            'Server=sp2sqlmax101;Database=maxview_eventlog;Trusted_Connection=yes;')
+        DeviceID = pd.read_sql_query(f"SET NOCOUNT ON; SELECT GroupableElements.ID FROM [MaxView_1.9.0.744].[dbo].[GroupableElements] WHERE Right(GroupableElements.Number,5) = '{TSSU}'", connection2)
+        connection2.close()
+        ## End temp code
+        index_col = ['TimeStamp']
+        sql = self.read_sql(file='SplitFail', start=start, end=end, TSSU=TSSU, Phase=Phase, Det=Det)
+        #more temp code:
+        sql = sql.replace('@DeviceID', str(DeviceID.iloc[0,0]))
+        data = self.run_query(sql)
+        data = data.astype({'TSSU':'category', 'Phase':'uint8', 'MT':'uint8', 'Total':'uint8'}).set_index(index_col)
+        path = f'{self.path_save}SplitFail.parquet'
+        try:
+            data.append(pd.read_parquet(path)).sort_index().to_parquet(path)
+        except FileNotFoundError:
+            print('First time saving')
+            data.sort_index().to_parquet(path)
+
+
+        return data#.sort_index(level=0) #no point in sorting yet
+    
+    def yellow_red(self):
+        pass
+
+    def update_data(self):  # sourcery skip: remove-empty-nested-block, remove-pass-elif, remove-redundant-if, remove-redundant-pass
+        functions = {'P': self.split_fail, 'Presence':self.split_fail, }
+        df = self.load_config()
+        for index, row in df.iterrows():
+            #set variables
+            TSSU = str(row['TSSU ID'])
+            
+            # For now, skip anything not in Sandy!
+            #if TSSU not in {'23023', '23037', '23026', '23025', '23024', '23036'}:
+            #    continue
+            Phase = str(row['Phase'])
+            Det = str(row['Det'])
+            last_run = row['Last Run']
+            earliest_run = row['Earliest Run']
+            start_date = row['Start date']
+            try:
+                function = self.dict[row['Function']]
+            except KeyError:
+                continue
+            if pd.isnull(last_run): #For first time run: Start Date through end of Yesterday
+                start = start_date
+                end = self.today
+                try:
+                    print('First Run For:', TSSU, Phase, Det)
+                    function(start, end, TSSU, Phase, Det)
+                    last_run = self.today
+                    df.at[index, 'Last Run'] = last_run
+                    df.at[index, 'Earliest Run'] = start_date
+                    self.save_config(df)
+                    print('done, sleeping')
+                    time.sleep(5)
+                    continue
+                except Exception as e:
+                    print("SQL query error, first time update", TSSU, Phase, Det, e)
+                    
+
+            if last_run < self.today: #If not first run: Last Run through Yesterday
+                start = last_run
+                end = self.today #- datetime.timedelta(days=1)
+                try:
+                    print('Normal Run For:', TSSU, Phase, Det)
+                    function(start, end, TSSU, Phase, Det)
+                    df.at[index, 'Last Run'] = self.today
+                    self.save_config(df)
+                except Exception:
+                    print("SQL query error, normal update")
+                    break
+
+            if start_date < earliest_run: #If Start Date has been changed: Start Date through Earliest Run
+                start = start_date
+                end = earliest_run
+                try:
+                    print('EARLIER START DATE Run For:', TSSU, Phase, Det)
+                    function(start, end, TSSU, Phase, Det)
+                    df.at[index, 'Earliest Run'] = start_date
+                    self.save_config(df)
+                except Exception as e:
+                    print("SQL query error, earlier date update", e, sep='\n')
+                    break
+
 
 class Get_RITIS_Data():
     '''
     Download Data using RITIS Massive Data Downloader.
-    Uses Edge browser
+    Uses Chrome browser, driver at https://chromedriver.chromium.org/downloads
+    Driver executable placed at C:\Program Files (x86)
+    Executable file needs to be updated periodically when browser is updated
     '''
     def __init__(self, driver_path="C:\Program Files (x86)\msedgedriver.exe"):
         self.today = datetime.datetime.now().date()
@@ -154,9 +287,24 @@ class Get_RITIS_Data():
         self.driver_path=driver_path
         self.url='https://pda.ritis.org/suite/download/'
         self.url2='https://pda.ritis.org/suite/my-history/'
-        self.driver=webdriver.Edge(self.driver_path)
+        
+        ##NOTES: Edge stopped working because profile issues, so I'm using Chrome instead
+        # Now to set it to use Default profile, to handle login stuff
+        #self.edge_options = EdgeOptions()
+        #self.edge_options.use_chromium = True    
+        #Here you set the path of the profile ending with User Data not the profile folder
+        #self.edge_options.add_argument("user-data-dir=C:\\Users\\hwyr67g\\AppData\\Local\\Microsoft\\Edge\\User Data"); 
+        #Here you specify the actual profile    
+        #self.edge_options.add_argument("user-data-dir=C:\\Users\\hwyr67g\\AppData\\Local\\Microsoft\\Edge\\User Data"); 
+        #self.edge_options.add_argument("profile-directory=Default");
+        #self.edge_options.binary_location = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+        #self.driver = Edge(options = self.edge_options, executable_path = self.driver_path)
+
+        self.driver = webdriver.Chrome(executable_path=r"chromedriver.exe")
+
         # Define xpath notations to be used
-        self.select_XD = '//*[@id="SimpleDropDown-SegmentTypeDropDown"]/div/div' # Need to select INRIX from drop down!
+        # for later, rather than using entire XPATH, i'm using shortcuts/search functions cause wow what a mess!
+        # But leave what works in place for now
         self.select_segment_codes = '/html/body/main/div/div[1]/div/div[1]/form/ol/li[2]/div[2]/div/div[2]/div[1]/div[3]/div/div'
         self.XD_codes_text = '/html/body/main/div/div[1]/div/div[1]/form/ol/li[2]/div[2]/div/div[2]/div[2]/div[3]/div/div/div/div/textarea'
         self.select_add_segments = '/html/body/main/div/div[1]/div/div[1]/form/ol/li[2]/div[2]/div/div[2]/div[2]/div[3]/div/div/div/div/div[2]/div'
@@ -168,8 +316,8 @@ class Get_RITIS_Data():
         self.select_email = '/html/body/main/div/div[1]/div/div[1]/form/ol/li[11]/div[2]/label/span'
         self.select_submit_button = '/html/body/main/div/div[1]/div/div[1]/form/button'
         self.select_history_link = '/html/body/main/div/div[2]/div/div[1]/div[2]/div/p/a'
-        self.select_status = '/html/body/main/div/div[1]/div[2]/div[2]/div/div[1]/div[3]/div[1]/div/div/div[2]/div/div[2]/div/div/div/div/div/div/span/div'
-        self.select_download = '/html/body/main/div/div[1]/div[2]/div[2]/div/div[1]/div[3]/div[1]/div/div/div[2]/div/div[3]/div/div/div/div/div/div/div/a'
+        #self.select_status = '/html/body/main/div/div[1]/div[2]/div[2]/div/div[1]/div[3]/div[1]/div/div/div[2]/div/div[2]/div/div/div/div/div/div/span/div'
+        #self.select_download = '/html/body/main/div/div[1]/div[2]/div[2]/div/div[1]/div[3]/div[1]/div/div/div[2]/div/div[3]/div/div/div/div/div/div/div/a'
         # Load XD segments
         with open('RITIS_Data_Download/XD_segments.txt', 'r') as file:
             self.xd_segments = file.read()
@@ -252,6 +400,12 @@ class Get_RITIS_Data():
 
     def submit_job(self, date, delta=0):
         self.log_in(url='https://pda.ritis.org/suite/download/')
+        # Make sure XD is the selected option from drop-down
+        # Click on drop down
+        print('clicking on drop down arrow')
+        self.select(xpath='//*[@class="datasource-group"]//*[@class="Select-arrow"]').click()
+        print('clicking on XD')
+        self.select(xpath='//*[@class="opened-menu"]//*[@title="XD"]').click()
         # Naviate to Segment Codes
         self.select(xpath=self.select_segment_codes).click()
         XD_Codes = self.select(xpath=self.XD_codes_text)
@@ -273,14 +427,46 @@ class Get_RITIS_Data():
         self.select(xpath=end_year_xpath).click()
         self.select(xpath=end_month_xpath).click()
         self.select(xpath=end_day_xpath).click()
+
+        # Limit time range 6:00 AM to 7:59 PM
+        print('Entering start time')
+        starttime = self.select(xpath='//*[@class="time-range-wrapper lower-time"]/div[1]/input')
+        starttime.send_keys(Keys.CONTROL, "a")
+        starttime.send_keys('6:00')
+        print('Entering end time')
+        starttime = self.select(xpath='//*[@class="time-range-wrapper upper-time"]/div[1]/input')
+        starttime.send_keys(Keys.CONTROL, "a")
+        starttime.send_keys('7:59', Keys.TAB)
+
+        # Uncheck confidence score 20 & 30
+        # input:checked[type='checkbox'] #css selector for checked box
+        historical = self.driver.find_element(By.XPATH, '//*[@class="confidence-score-option"][contains(., "Historical Average:")]/label/input')
+        if historical.is_selected():
+            print('unchecking the historical box')
+            self.select(xpath='//*[@class="confidence-score-option"][contains(., "Historical Average:")]/label').click()
+        else:
+            print('historical already unchecked')
+        # Uncheck reference
+        reference = self.driver.find_element(By.XPATH, '//*[@class="confidence-score-option"][contains(., "Reference Speed:")]/label/input')
+        if reference.is_selected():
+            print('unchecking the reference box')
+            self.select(xpath='//*[@class="confidence-score-option"][contains(., "Reference Speed:")]/label').click()
+        else:
+            print('reference already unchecked')
+
+
+        # Select units of Seconds
+        print('clicking on Seconds')
+        self.select(xpath='//*[@class="TravelTimeUnitsSelector"]/div/div').click()
         # Select 15-min aggregation
+        print('clicking on 15-minute')
         self.select(xpath=self.select_15_min).click()
         # Add a title
         file_name = str(date)
         self.select(xpath=self.select_title).send_keys(file_name)
         # Uncheck send email
         self.select(xpath=self.select_email).click()
-        # Submit the requst
+        # Submit the reqeust
         self.select(xpath=self.select_submit_button).click()
         return file_name # to be used as file name for retreiving download
         
@@ -290,12 +476,12 @@ class Get_RITIS_Data():
         # Check Status, download to PC when done
         try:
             print('Waiting for job to be ready')
-            while self.select(xpath=self.select_status, sleep=60, wait=10).text == 'Pending':
+            while self.select(xpath=f"//*[@class='fixedDataTableCellGroupLayout_cellGroup' ][contains(.,'{file_name}')]//*[@class='TooltipWrapper']/div", sleep=30, wait=10).text == 'Pending':
                 time.sleep(5)
             print('Downloading to download folder')
-            self.select(xpath=self.select_download).click()
-        except Exception:
-            print('Download Failed')
+            self.select(xpath=f"//*[@class='description-text' ][contains(.,'{file_name}')]//a").click()
+        except Exception as e:
+            print('Download Failed, error: ', e)
             exit()
         wait_time = 0
         while os.path.isfile(check_download) is False:
@@ -311,17 +497,21 @@ class Get_RITIS_Data():
         with zipfile.ZipFile(f'{download_folder}/{file_name}.zip', 'r') as zip_ref:
             zip_ref.extractall(f'{download_folder}/{file_name}')
         time.sleep(2)
-        df = pd.read_csv(f'{download_folder}/{file_name}/{file_name}.csv', index_col=['xd_id', 'measurement_tstamp'], parse_dates=['measurement_tstamp'])
+        print('Reading data and optimizing data types')
+        df = pd.read_csv(f'{download_folder}/{file_name}/{file_name}.csv', parse_dates=['measurement_tstamp'])
+        df = df.astype({'speed':'float32', 'reference_speed':'float32', 'travel_time_seconds':'float32'}) #'xd_id':'uint32' pandas upscales index dtypes
+        df = df.set_index(['xd_id', 'measurement_tstamp'])
         df.index.names = ['XD', 'TimeStamp']
+        df = df[['speed','reference_speed','travel_time_seconds']]
         # Check that the input date matches date on actual data!
         # This check lets us know if something has changed or gone wrong to ensure data is as expected
         if str(df.index[1][1].date()) == file_name:
-            df.to_parquet(f'TravelTime/{file_name}.parquet')
+            df.sort_index(level=0).to_parquet(f'TravelTime/{file_name}.parquet')
             print('Saved parquet file to folder')
         else:
             print('ERROR!!! Date of data timestamp did not match input date! Debug date picker!')
             print(f'Data date = {str(df.index[1][1].date())} and input date = {file_name}')
-            exit()
+            quit()
         time.sleep(3)
         shutil.rmtree(f'{download_folder}/{file_name}')
         os.remove(f'{download_folder}/{file_name}.zip')
@@ -352,17 +542,14 @@ class Get_RITIS_Data():
         self.driver.quit() # quits the browser
 
 
-class Decompose():
-    pass
-
-
 class Analytics():
-
+    
     def __init__(self):
         self.today = datetime.datetime.now().date()
         self.path_ = '//scdata2/signalshar/Data_Analysis/Traffic_Signal_Data_and_Analytics/'
 
-    def load_data(self, folder, date=str(datetime.datetime.now().date()), num_days = 35):
+    @classmethod
+    def load_data(cls, folder, date=str(datetime.datetime.now().date()), num_days = 35+7):
         '''Loads parquet files from selected folder and date range'''
         # Get list of file names
         file_names = sorted(glob.glob(f"{folder}/*.parquet"))
@@ -375,41 +562,44 @@ class Analytics():
         data = [pd.read_parquet(file) for file in files]
         return(pd.concat(data, axis=0))
 
-    def normalize_by_group(self, df, group, column):
-        '''Returns indexd colum of normalized valuse, using Vectorization for quick calculation
-        Assumes group is in index
+    def normalize_by_group(self, df, group, column, dtype='float32'):
+        '''Returns normalized values, using Vectorization for quick calculation
+        Assumes an index already in place, resets the index and sets it to the group
         Takes a dataframe, a list of columns for which to group the data, and the column for which the normalization is based on
         adapted from https://stackoverflow.com/questions/26046208/normalize-dataframe-by-group'''
+        df = df.reset_index().set_index(group)
         df = df[column]
-        groups = df.groupby(level=group)
+        groups = df.groupby(level = group)
         # computes group-wise mean/std, then auto broadcasts to size of group chunk
         mean = groups.transform("mean")
         std = groups.transform("std")
-        return (df[mean.columns] - mean) / std
+        new_df = (df[mean.columns] - mean) / std
+        return new_df.astype(dtype).values
 
-    def add_seg_groups(self, df, index='XD', columns = None, file='//scdata2/signalshar/Data_Analysis/Data/Performance/dim_signals_XD.parquet'):
+    def add_seg_groups(self, df, columns = None, file='//scdata2/signalshar/Data_Analysis/Data/Performance/dim_signals_XD.parquet'):
+        '''Add grouping categories'''
         if columns is None:
             columns = ['group', 'District']
         # Load dimension table with groups
         dim = pd.read_parquet(file)[columns]
+        dim = dim.astype('category')
+        print(f'The data types of groups are both supposed to be category: {dim.dtypes}')
         # drop XD duplicates (same one can be assigned to multiple signals)
         dim = dim[~dim.index.duplicated()]
-        df_index = df.index.get_level_values(index)
-        for column in columns:
-            df[column] = dim.loc[df_index][column].values
-        return df.reset_index().set_index(['TimeStamp'] + [index] + columns)
+        return df.join(dim)
 
 
     def find_anomalies(self, df, z=4):
-        # sourcery skip: default-mutable-arg
         '''Calculates individual z-scores from group z-scores'''
-
+        #df.reset_index(inplace=True)
         df['Resid_Z'] = self.normalize_by_group(df=df, group=['XD'], column=['Resid'])
         df['Resid_District_Z'] = self.normalize_by_group(df=df, group=['TimeStamp', 'District'], column=['Resid_Z'])
         
         # Classify Local Anomalies. If |Resid_Z| > 4 and |Resid_District_Z| < 4, then Global, If |Resid_Z| > 4 and |Resid_Distric_Z| > 4, then Local 
+        # "Local Anomaly" is when a specific XD segment is an anomaly in regards to itself, AND those in the same district
         df['LocalAnomaly'] = df.apply(lambda row: abs(row['Resid_District_Z']) > z and abs(row['Resid_Z']) > z, axis=1) #need to vectorize
         
+        # "Local Anomaly within Corridor" is when the XD segment is additionally an anomaly within it's continuous group of segments
         df['Resid_Corridor_Z'] = self.normalize_by_group(df=df, group=['TimeStamp', 'group'], column=['Resid_Z'])
         df['LocalAnomaly_Within_Corridor'] = df.apply(lambda row: abs(row['Resid_Corridor_Z']) > z and abs(row['Resid_Z']) > z, axis=1) #need to vectorize
         
@@ -420,43 +610,56 @@ class Analytics():
         #r['Resid_group_Z'] = r.groupby(level=['TimeStamp', 'group'])['Resid_Z'].transform(lambda x: group_Z(x))
         return df        
     
-    def decompose(self, df, field='travel_time_minutes', freq='15min', smooth='7d',min_periods=50, time_min='6:00', time_max='19:45'):
+    def decompose(self, df, field='travel_time_seconds', freq='15min', window='7d',min_periods=56*4, time_min='6:00', time_max='19:45'):
         '''Robust decomposition using median
-        dataframe input must have indexs ID/Attribute, and TimeStamp'''
+        dataframe input must have indexs XD and TimeStamp'''
 
         # Temp step
         #df = df.loc[[1237049582, 1236860943], slice(None),:]
         df = df[[field]]
-        # Filter by Time of Day
+        # Filter by Time of Day (step no longer needed because time is now filtered by RITIS massive data downloader first?)
         df = df.reset_index().set_index('TimeStamp').between_time(time_min, time_max).reset_index().set_index(['TimeStamp','XD'])
         df.index.levels[1].freq = freq
         print(f'Frequency set at {df.index.levels[1].freq}')
+        print('create group', datetime.datetime.now())
         group = df.reset_index(level=1).groupby('XD')
+        print('reset index', datetime.datetime.now())
         df = df.reset_index()
-        df['RollingMedian'] = group.transform(lambda x: x.rolling(smooth, min_periods=min_periods).median()).reset_index()[field]
-        df['Detrend'] = df.travel_time_minutes - df.RollingMedian
+        print('working on rolling median', datetime.datetime.now())
+        df['RollingMedian'] = group.transform(lambda x: x.rolling(window=window, min_periods=min_periods, closed='both').median()).reset_index()[field]
+        #print('rolling median',datetime.datetime.now(), df.head())
+        # drop first 7 days because the rolling median needs a full week
+        min_date = df['TimeStamp'].min() + datetime.timedelta(days = 7)
+        df = df[df['TimeStamp'] > min_date]
+        #print('rolling median', df.head())
+
+        df['Detrend'] = df.travel_time_seconds - df.RollingMedian
         df['DayPeriod'] = ((df['TimeStamp'].dt.hour * 60 + df['TimeStamp'].dt.minute)/15 + 1).astype(int)
         df['WeekPeriod'] = df['TimeStamp'].dt.isocalendar().day
         df['SeasonDay'] = df.groupby(['XD', 'DayPeriod'])['Detrend'].transform('median')
-        df['DeSeason'] = df.Detrend - df.SeasonDay
-        df['SeasonWeek'] = df.groupby(['XD', 'WeekPeriod', 'DayPeriod'])['DeSeason'].transform('median')
+        df['DeSeason_temp_step'] = df.Detrend - df.SeasonDay
+        df['SeasonWeek'] = df.groupby(['XD', 'WeekPeriod', 'DayPeriod'])['DeSeason_temp_step'].transform('median')
         df['Resid'] = df.DeSeason - df.SeasonWeek
-        df = df.set_index(['XD', 'TimeStamp'])[['travel_time_minutes', 'RollingMedian', 'SeasonDay', 'SeasonWeek', 'Resid']]
-        return df.dropna()
+        df = df.set_index(['XD', 'TimeStamp'])[['travel_time_seconds', 'RollingMedian', 'SeasonDay', 'SeasonWeek', 'Resid']]
+        return df.dropna().astype('float32')
 
 
     def global_anomaly(self):
         pass
 
 
-class DetectorHealth(Analytics):
+class DetectorHealth():#Analytics):
+
+    def __init__(self):
+        self.today = datetime.datetime.now().date()
+        self.path_ = '//scdata2/signalshar/Data_Analysis/Traffic_Signal_Data_and_Analytics/'
         
     def load_all_data(self, days=35, date='2022-03-07'):
         '''Load each data type'''
         def quick_load(folder, date, num_days):
                 try:
                         now = datetime.datetime.now()
-                        df = self.load_data(folder, date, num_days)
+                        df = Analytics.load_data(folder, date, num_days)
                         #print(f'{folder} took {datetime.datetime.now() - now} seconds')
                         return df.reset_index()
                 except Exception:
@@ -498,11 +701,9 @@ class DetectorHealth(Analytics):
         # add sign back to GEH for use in Z-score calc
         return np.where(C == 0, np.NaN, GEH * sign)
 
-    def dims(self):
+    def dims(self, server='SP2SQLMAX101', database='MaxView_1.9.0.744'):
         '''Get traffic signal dimension table with names and parent groups'''
         sql = 'SELECT ID as DeviceID, ParentID FROM GroupableElements WHERE ParentID IS NOT NULL'
-        server='SP2SQLMAX101'
-        database='MaxView_1.9.0.744'
         return Get_SQL_Data(server=server, database=database).run_query(sql=sql).astype({'DeviceID':'uint16', 'ParentID':'category'})
 
     def normalize(self, df):
@@ -590,3 +791,4 @@ class DetectorHealth(Analytics):
                         file.write(date)
                 # Now on to the next day
                 last_run += datetime.timedelta(days=1)
+
