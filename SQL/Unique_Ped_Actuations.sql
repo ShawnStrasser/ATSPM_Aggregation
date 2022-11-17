@@ -5,8 +5,8 @@
 
 
 --start/end variables are commented out because they are replaced when query is run from Python
-DECLARE @start AS DATETIME = '2022-11-02'
-DECLARE @end AS DATETIME = '2022-11-03'
+--DECLARE @start AS DATETIME = '2022-11-02'
+--DECLARE @end AS DATETIME = '2022-11-03'
 DECLARE @threshold AS INT = 15000 --minimum milliseconds between actuations to be counted as unique
 
 SELECT
