@@ -11,7 +11,7 @@ DECLARE @threshold AS INT = 15000 --minimum milliseconds between actuations to b
 
 SELECT
     TimeStamp,
-    DeviceId,
+    DeviceID, 
     Phase,
     COUNT(*) as Unique_Actuations
 FROM
