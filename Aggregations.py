@@ -16,15 +16,15 @@ class Aggregations:
         if isinstance(duckdb_threads, int):
             duckdb.query(f"SET threads to {duckdb_threads}")
             #print(duckdb.query(f"SELECT current_setting('threads');"))
-        
-        self.config = phase_detector_config
+
         try:
             # Filter configs to Presence function for split failures only
             # Only include only necessary columns to assign detector to phase
-            self.split_fail_config = phase_detector_config[phase_detector_config.Function == 'Presence'][['Phase', 'Parameter', 'DeviceId']]
+            self.split_fail_config =phase_detector_config[phase_detector_config.Function == 'Presence'][['Phase', 'Parameter', 'DeviceId']]
             self.split_fail_devices = set(self.split_fail_config.DeviceId)
-        except:
-            print('No Presence Detection Found!')
+        except Exception as e:
+            print('Presence Detection not loaded correctly!')
+            print(e)
         
         self.data = data
         self.mssql_server = mssql_server
@@ -101,14 +101,14 @@ class Aggregations:
         time_diff = duckdb.query(self.queries_dict['time_diff'])
         agg = duckdb.query(self.queries_dict['agg'])
         final = duckdb.query(self.queries_dict['final']).fetchdf()
-        final['Spit_Failure'] = np.where((final.Red_Occupancy >= red_occupancy_threshold) & 
+        final['Split_Failure'] = np.where((final.Red_Occupancy >= red_occupancy_threshold) & 
                                         (final.Green_Occupancy >= green_occupancy_threshold), True, False)
         return final
     
 
 
     # Optional, plot occupancy
-    def plot_occupancy(self, sf, DeviceId, Phase=None, Detector=None, green_occupancy_threshold=0.79):
+    def plot_occupancy(self, sf, DeviceId, Phase=None, Detector=None):
         # Filter DataFrame to include only rows with the given DeviceId and Detector
         if Phase is None and Detector is not None:
             sf_filtered = sf[(sf['DeviceId'] == DeviceId) & (sf['Detector'] == Detector)].sort_values('TimeStamp')
@@ -133,7 +133,7 @@ class Aggregations:
         plt.step(average_red.index, average_red, where='post', color='red', linestyle='-', label='Average Red Occupancy')
 
         # Find all timestamps where both Green_Occupancy and Red_Occupancy are above 0.79
-        timestamps = sf_filtered[(sf_filtered['Green_Occupancy'] > green_occupancy_threshold) & (sf_filtered['Red_Occupancy'] > 0.79)].index
+        timestamps = sf_filtered[sf_filtered['Split_Failure']].index
 
         # Add a vertical line for each of those timestamps with a thinner line
         for timestamp in timestamps:
