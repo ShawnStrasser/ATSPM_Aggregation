@@ -1,6 +1,6 @@
 # ATSPM Aggregation
 
-This repository contains code for efficient and scalable aggregation of Automated Traffic Signal Performance Measures (ATSPMs). It so far only includes split failures, but will soon also have Yellow/Red actuations, Percent Arrival on Green, and Platoon Ratio. And volumes. 
+This repository contains WORK-IN-PROGRESS code for efficient and scalable aggregation of Automated Traffic Signal Performance Measures (ATSPMs). It includes split failures, Yellow/Red actuations, Percent Arrival on Green. I'll add some more examples and documentation soon. This probably isn't ready for production use yet, use with caution, it will be more developed/tested by end of July 2023. 
 
 ## Quick Usage Overview for Split Failures
 
