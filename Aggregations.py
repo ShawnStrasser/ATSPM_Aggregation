@@ -1,5 +1,7 @@
 import pandas as pd
 import duckdb
+import os
+
 # Additional libraries are imported inside of optional functions: query_mssql & 
 
 class Aggregations:
@@ -29,8 +31,12 @@ class Aggregations:
         self.mssql_server = mssql_server
         self.mssql_database = mssql_database
 
+        # Get the absolute path of the current file
+        current_file_path = os.path.abspath(__file__)
+        # Construct the absolute path to the queries.sql file
+        queries_file_path = os.path.join(os.path.dirname(current_file_path), 'queries.sql')
         # Load SQL Queries Into Dicitonary
-        with open('queries.sql', 'r') as file:
+        with open(queries_file_path, 'r') as file:
             content = file.read()
         queries = content.split(';')  # Splits queries by ';' which ends a SQL command
         self.queries_dict = {}
