@@ -24,6 +24,9 @@ aggr.plot_occupancy(sf, DeviceId=240, Phase=1)
 ```
 ![Alt text](example-SF-chart.png)
 
+## Try it on Colab!
+If you'd like to try out the code without installing anything, here is a Google Colab notebook:
+https://colab.research.google.com/drive/1xHs7H4SKRiIoX3GtUxDG0qiWS4zdmYsr
 
 ## Background
 
