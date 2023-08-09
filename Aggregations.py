@@ -6,6 +6,19 @@ import os
 
 class Aggregations:
     def __init__(self, phase_detector_config, data=None, mssql_server=None, mssql_database=None, duckdb_threads=None):
+        # Connect to DuckDB and register table
+        self.duck_con = duckdb.connect(database=':memory:', read_only=False)
+
+        # Load data if provided, ensuring proper format
+        try:
+            if data is not None:
+                # Set data types
+                data = data.astype({'DeviceId':'uint16', 'EventId':'uint8', 'Parameter':'uint8'})
+                data = duckdb.query('SELECT DISTINCT * FROM data WHERE EventId IN(1,8,10,81,82)').fetchdf()
+                self.duck_con.register('raw_data', data)
+        except Exception as e:
+            print(e)
+            print('Data must be a pandas dataframe with columns: DeviceId, EventId, Parameter, Timestamp')
 
         # Option to limit CPU use if needed
         if isinstance(duckdb_threads, int):
@@ -26,8 +39,7 @@ class Aggregations:
                 print(e)
         for item in [('split_fail', 'Presence'), ('yellow_red', 'Yellow_Red'), ('arrival_on_green', 'Advance')]:
             declare_config(item)
-
-        self.data = data
+ 
         self.mssql_server = mssql_server
         self.mssql_database = mssql_database
 
@@ -80,47 +92,132 @@ class Aggregations:
         {device_filter}
         """
         # Load raw data and downsize the dtypes for efficiency
-        self.data = self.query_mssql(query, self.mssql_server, self.mssql_database)
-        self.data = self.data.astype({'DeviceId':'uint16', 'EventId':'uint8', 'Parameter':'uint8'})
+        df = self.query_mssql(query, self.mssql_server, self.mssql_database)
+        df = df.astype({'DeviceId':'uint16', 'EventId':'uint8', 'Parameter':'uint8'})
+        # Register the data in DuckDB
+        self.duck_con.register('raw_data', df)
+
+    # Get raw event data from SQL Server
+    def get_mssql_data(self, start, end, filtered_devices=None):
+        
+        if filtered_devices is not None:
+            # Start constructing a long SQL script
+            sql_script = "SET NOCOUNT ON; CREATE TABLE #TempDeviceTable (DeviceId int); "
+            
+            # Add an INSERT statement to the script for each device
+            for device in filtered_devices:
+                sql_script += f"INSERT INTO #TempDeviceTable (DeviceId) VALUES ({device}); "
+
+            # Modify the device filter to use a JOIN instead of IN
+            device_filter = """
+            INNER JOIN #TempDeviceTable 
+            ON ASCEvents.DeviceId = #TempDeviceTable.DeviceId
+            """
+        else:
+            device_filter = ''
+            sql_script = ''
+
+        # Add the main SELECT statement to the script
+        sql_script += f"""
+        SELECT DISTINCT *
+        FROM ASCEvents 
+        {device_filter}
+        WHERE ASCEvents.TimeStamp >= '{start}' 
+        AND ASCEvents.TimeStamp < '{end}'
+        AND EventId IN(1,8,10,81,82);
+        """
+
+        if filtered_devices is not None:
+            # Add a statement to drop the temp table to the script
+            sql_script += "DROP TABLE #TempDeviceTable;"
+        #print('\n'*3,sql_script,'\n'*3)
+        # Load raw data and downsize the dtypes for efficiency
+        df = self.query_mssql(sql_script, self.mssql_server, self.mssql_database)
+        df = df.astype({'DeviceId':'uint16', 'EventId':'uint8', 'Parameter':'uint8'})
+        # Register the data in DuckDB
+        self.duck_con.register('raw_data', df)
+        #print(sql_script)
+
 
     # Helper function to modify and run DuckDB queries
-    def run_duck(self, query_name, from_table=None, variable1=None):
-        #print(f'running query: {query_name}')
+    def create_view(self, query_name, view_name, from_table=None, variable1=None):
+        '''
+        query_name: name of query to run
+        view_name: name of view to create
+        from_table: table to use in query
+        variable1: variable to use in query'''
+
         query = self.queries_dict[query_name]
         if from_table is not None:
             query = query.replace('@table', from_table)
         if variable1 is not None:
             query = query.replace('@variable1', variable1)
-        return duckdb.query(query)
+        # Create the view (drop if it already exists)
+        self.duck_con.execute(f"DROP VIEW IF EXISTS {view_name}")
+        self.duck_con.execute(f"CREATE TEMPORARY VIEW {view_name} AS {query}")
+    
+    # Function to clear all tables and cache in DuckDB
+    def clean_duck(self):
+        #self.duck_con.execute('DROP ALL OBJECTS;')
+        self.duck_con.close()
+
+        # Clear any pandas DataFrames stored as instance variables.
+        for attr_name, attr_value in self.__dict__.items():
+            if isinstance(attr_value, pd.DataFrame):
+                print(f"Clearing {attr_name}")
+                delattr(self, attr_name)
+
+        # Clear SQL queries dictionary
+        if hasattr(self, 'queries_dict'):
+            print('Clearing queries_dict')
+            self.queries_dict.clear()
+
+        # Clear configuration dictionary
+        if hasattr(self, 'configs'):
+            print('Clearing configs')
+            self.configs.clear()
+
+    # Function to check if data is loaded
+    def check_data(self):
+        tables = [x[0] for x in self.duck_con.execute("SHOW TABLES").fetchall()]
+        if 'raw_data' not in tables:
+            print('Data is not loaded yet!')
+            raise ValueError("Data is not loaded yet!")
+        # Check if data table is empty
+        if self.duck_con.execute("SELECT COUNT(*) FROM raw_data LIMIT 1").fetchall()[0][0] == 0:
+            print('Data is empty!')
+            raise ValueError("Data is empty!")
+        #print('Data is loaded and ready to go!')
 
 
     # Aggregate Split Failures, by approach is default, set to false to do by lane
     # Based on research, about 70% may be good threshold for 20ft long zones with approach based
     def split_failure(self, by_approach=True, green_occupancy_threshold=0.80, red_occupancy_threshold=0.80):
-        if self.data is None:
-            raise ValueError("Data is not loaded yet!")
+        # Check if data table exists in DuckDB
+        self.check_data()
         # Now transform data into split failures
         # NOTE: TABLE NAMES ARE HARD CODED INTO queries.sql
         # DON'T CHANGE THESE UNLESS YOU DO IT IN BOTH FILES
-        raw_data = self.data # Make it visible to DuckDB
-        sf_configs = self.configs['split_fail_config'] # Make it visible to DuckDB
+
+        # Register configs in DuckDB
+        self.duck_con.register('configs', self.configs['split_fail_config'])
 
         # Run SQL Queries to transform data
         # Each step is an immaterialized view that will be optimized together at the end
-        view1 = self.run_duck('detector_with_phase')
-        view2 = self.run_duck('impute_actuations','view1')
+        self.create_view('detector_with_phase', view_name='view1')
+        self.create_view('impute_actuations',view_name='view2', from_table='view1')
         # by_approach combines detectors accross phase
         if by_approach: 
-            view3a = self.run_duck('combine_detectors_ByApproach', 'view2')
-            view3 = self.run_duck('phase_with_detector_ByApproach', 'view3a')            
+            self.create_view('combine_detectors_ByApproach', view_name='view3a', from_table='view2')
+            self.create_view('phase_with_detector_ByApproach', view_name='view3', from_table='view3a')       
         else:
-            view3 = self.run_duck('phase_with_detector_ByLane', 'view2')
+            self.create_view('phase_with_detector_ByLane', view_name='view3', from_table='view2')
         # Remaining queries are same for by approach or by lane
-        view4 = self.run_duck('with_barrier', 'view3', '5')#add the barrier at 5 seconds
-        view5 = self.run_duck('with_cycle', 'view4')
-        view6 = self.run_duck('time_diff', 'view5')
-        view7 = self.run_duck('aggregate', 'view6')
-        view8 = self.run_duck('final_SF', 'view7')
+        self.create_view('with_barrier', view_name='view4', from_table='view3', variable1='5')#add the barrier at 5 seconds
+        self.create_view('with_cycle', view_name='view5', from_table='view4')
+        self.create_view('time_diff', view_name='view6', from_table='view5')
+        self.create_view('aggregate', view_name='view7', from_table='view6')
+        self.create_view('final_SF', view_name='view8', from_table='view7')
         # Apply red/green occupancy thresholds for classification
         query = f"""
             SELECT *,
@@ -130,42 +227,41 @@ class Aggregations:
                 THEN True ELSE False END AS Split_Failure
             FROM view8
         """
-        return duckdb.query(query).fetchdf()
+        return self.duck_con.query(query).fetchdf()
         
 
     # Yellow and Red Actuations
-    def yellow_red(self, bin_size=15, latency_offset=0):
-        if self.data is None:
-            raise ValueError("Data is not loaded yet!")
+    def yellow_red(self, bin_size=15, latency_offset=1.5):
+        # Check if data table exists in DuckDB
+        self.check_data()    
         # NOTE: TABLE NAMES ARE HARD CODED INTO queries.sql
         # DON'T CHANGE THESE UNLESS YOU DO IT IN BOTH FILES
-        raw_data = self.data # Make it visible to DuckDB
-        configs = self.configs['yellow_red_config'] # Make it visible to DuckDB
+        # Register configs in DuckDB
+        self.duck_con.register('configs', self.configs['yellow_red_config'])
         # Run SQL Queries to transform data
         # Each step is an immaterialized view that will be optimized together at the end
-
-        view1 = self.run_duck('detector_with_phase_ON_ONLY', variable1='1.5') #only contains detector on events, shifted by 1.5 seconds for latency
-        view2 = self.run_duck('phase_with_detector_ByApproach', 'view1') #contains phase data and detector data together
-        view3 = self.run_duck('with_cycle', 'view2')        
-        view4 = self.run_duck('red_offset', 'view3')
-        return view4.fetchdf()
+        self.create_view('detector_with_phase_ON_ONLY', view_name='view1', variable1=str(latency_offset)) #only contains detector on events, shifted by 1.5 seconds for latency
+        self.create_view('phase_with_detector_ByApproach', view_name='view2', from_table='view1') #contains phase data and detector data together
+        self.create_view('with_cycle', view_name='view3', from_table='view2')        
+        self.create_view('red_offset', view_name='view4', from_table='view3')
+        return self.duck_con.query('SELECT * FROM view4').fetchdf()
     
 
     # Arrival on Green
     def arrival_on_green(self, bin_size=15, latency_offset=0):
-        if self.data is None:
-            raise ValueError("Data is not loaded yet!")
+        # Check if data table exists in DuckDB
+        self.check_data()
         # NOTE: TABLE NAMES ARE HARD CODED INTO queries.sql
         # DON'T CHANGE THESE UNLESS YOU DO IT IN BOTH FILES
-        raw_data = self.data # Make it visible to DuckDB
-        configs = self.configs['arrival_on_green_config'] # Make it visible to DuckDB
+        # Register configs in DuckDB
+        self.duck_con.register('configs', self.configs['arrival_on_green_config'])
         # Run SQL Queries to transform data
         # Each step is an immaterialized view that will be optimized together at the end
-        view1 = self.run_duck('detector_with_phase_ON_ONLY', variable1=str(latency_offset)) #only contains detector on events. latency offset=0?
-        view2 = self.run_duck('phase_with_detector_ByApproach', 'view1') #contains phase data and detector data together
-        view3 = self.run_duck('with_cycle', 'view2')
-        view4 = self.run_duck('arrival_on_green', 'view3', variable1=str(bin_size))#set aggregation level to 60 minutes
-        return view4.fetchdf()
+        self.create_view('detector_with_phase_ON_ONLY', view_name='view1', variable1=str(latency_offset)) #only contains detector on events. latency offset=0?
+        self.create_view('phase_with_detector_ByApproach', view_name='view2', from_table='view1') #contains phase data and detector data together
+        self.create_view('with_cycle', view_name='view3', from_table='view2')
+        self.create_view('arrival_on_green', view_name='view4', from_table='view3', variable1=str(bin_size))
+        return self.duck_con.query('SELECT * FROM view4').fetchdf()
 
 
     # Optional, plot occupancy

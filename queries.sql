@@ -17,11 +17,11 @@ SELECT raw_data.TimeStamp,
     raw_data.DeviceId, 
     raw_data.EventId, 
     raw_data.Parameter as Detector, 
-    CAST(sf_configs.Phase AS UTINYINT) AS Phase
+    CAST(configs.Phase AS UTINYINT) AS Phase
 FROM raw_data
-JOIN sf_configs ON 
-    raw_data.DeviceId = sf_configs.DeviceId 
-    AND raw_data.Parameter = sf_configs.Parameter
+JOIN configs ON 
+    raw_data.DeviceId = configs.DeviceId 
+    AND raw_data.Parameter = configs.Parameter
 WHERE EventId IN(81,82);
 
 
