@@ -1,20 +1,44 @@
+
 import pandas as pd
 import duckdb
 import os
 
-# Additional libraries are imported inside of optional functions: query_mssql & 
+class Utils:
+    '''Helper functions to be shared across classes'''
+    # Run queries in MS SQL Server
+    def query_mssql(self, query, server, database):
+        from sqlalchemy import create_engine
+        import warnings
+        query = "SET NOCOUNT ON; " + query
+        connection_string = f"mssql+pyodbc://@{server}/{database}?trusted_connection=yes&driver=SQL+Server"
+        engine = create_engine(connection_string)
+        conn = engine.raw_connection() # Uses DBAPI
+        # Supress warning from Pandas where it says it's only tested on sqlalchemy
+        # This method is MUCH faster, so I'll stick with it
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            df = pd.read_sql_query(query, conn)
+        conn.close()
+        engine.dispose()
+        return df
 
-class Aggregations:
+# Additional libraries are imported inside of optional functions: query_mssql & 
+class Aggregations(Utils):
     def __init__(self, phase_detector_config, data=None, mssql_server=None, mssql_database=None, duckdb_threads=None):
         # Connect to DuckDB and register table
         self.duck_con = duckdb.connect(database=':memory:', read_only=False)
+
+        # Hi-res Event Codes to Include When Loading Data FOR DETECTOR-BASED ATSPMs
+        self.event_codes = '1,8,10,81,82'
+        # Hi-res Event Codes to Include When Loading Data FOR GENERIC ATSPMs
+        self.event_codes_generic = '4,5,6'
 
         # Load data if provided, ensuring proper format
         try:
             if data is not None:
                 # Set data types
                 data = data.astype({'DeviceId':'uint16', 'EventId':'uint8', 'Parameter':'uint8'})
-                data = duckdb.query('SELECT DISTINCT * FROM data WHERE EventId IN(1,8,10,81,82)').fetchdf()
+                data = duckdb.query(f'SELECT DISTINCT * FROM data WHERE EventId IN({self.event_codes},{self.event_codes_generic})').fetchdf()
                 self.duck_con.register('raw_data', data)
         except Exception as e:
             print(e)
@@ -59,50 +83,12 @@ class Aggregations:
                 sql_query = '\n'.join(lines[1:]).strip()  # Join the remaining lines to form the query
                 self.queries_dict[name] = sql_query
 
-    # Run queries in MS SQL Server
-    def query_mssql(self, query, server, database):
-        from sqlalchemy import create_engine
-        import warnings
-        connection_string = f"mssql+pyodbc://@{server}/{database}?trusted_connection=yes&driver=SQL+Server"
-        engine = create_engine(connection_string)
-        conn = engine.raw_connection() # Uses DBAPI
-        # Supress warning from Pandas where it says it's only tested on sqlalchemy
-        # This method is MUCH faster, so I'll stick with it
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            df = pd.read_sql_query(query, conn)
-        conn.close()
-        engine.dispose()
-        return df
-    
     # Get raw event data from SQL Server
-    def get_mssql_data(self, start, end, filtered_devices=None):
-        
-        if filtered_devices is None:
-            device_filter = ''
-        else:
-            device_filter = f"AND DeviceId IN{str(filtered_devices).replace('[','(').replace(']',')')}"
-        
-        query = f"""
-        SELECT DISTINCT *
-        FROM ASCEvents 
-        WHERE ASCEvents.TimeStamp >= '{start}' 
-        AND ASCEvents.TimeStamp < '{end}'
-        AND EventId IN(1,8,10,81,82)
-        {device_filter}
-        """
-        # Load raw data and downsize the dtypes for efficiency
-        df = self.query_mssql(query, self.mssql_server, self.mssql_database)
-        df = df.astype({'DeviceId':'uint16', 'EventId':'uint8', 'Parameter':'uint8'})
-        # Register the data in DuckDB
-        self.duck_con.register('raw_data', df)
-
-    # Get raw event data from SQL Server
-    def get_mssql_data(self, start, end, filtered_devices=None):
+    def get_mssql_data(self, start, end, event_codes, filtered_devices=None):
         
         if filtered_devices is not None:
             # Start constructing a long SQL script
-            sql_script = "SET NOCOUNT ON; CREATE TABLE #TempDeviceTable (DeviceId int); "
+            sql_script = "CREATE TABLE #TempDeviceTable (DeviceId int); "
             
             # Add an INSERT statement to the script for each device
             for device in filtered_devices:
@@ -115,7 +101,7 @@ class Aggregations:
             """
         else:
             device_filter = ''
-            sql_script = ''
+            sql_script = 'SET NOCOUNT ON; '
 
         # Add the main SELECT statement to the script
         sql_script += f"""
@@ -124,23 +110,26 @@ class Aggregations:
         {device_filter}
         WHERE ASCEvents.TimeStamp >= '{start}' 
         AND ASCEvents.TimeStamp < '{end}'
-        AND EventId IN(1,8,10,81,82);
+        AND EventId IN({event_codes});
         """
 
         if filtered_devices is not None:
             # Add a statement to drop the temp table to the script
             sql_script += "DROP TABLE #TempDeviceTable;"
         #print('\n'*3,sql_script,'\n'*3)
+        #print('Loading data from SQL Server for quer \n', sql_script, '\n')
         # Load raw data and downsize the dtypes for efficiency
         df = self.query_mssql(sql_script, self.mssql_server, self.mssql_database)
+        print('loaded data from SQL Server')
         df = df.astype({'DeviceId':'uint16', 'EventId':'uint8', 'Parameter':'uint8'})
-        # Register the data in DuckDB
+        # Register the data in DuckDB (drop if exists)
+        self.duck_con.execute('DROP VIEW IF EXISTS raw_data')
         self.duck_con.register('raw_data', df)
         #print(sql_script)
 
 
     # Helper function to modify and run DuckDB queries
-    def create_view(self, query_name, view_name, from_table=None, variable1=None):
+    def create_view(self, query_name, view_name, from_table=None, variable1=None, debug=False):
         '''
         query_name: name of query to run
         view_name: name of view to create
@@ -152,30 +141,12 @@ class Aggregations:
             query = query.replace('@table', from_table)
         if variable1 is not None:
             query = query.replace('@variable1', variable1)
+        if debug:
+            print(query)
         # Create the view (drop if it already exists)
         self.duck_con.execute(f"DROP VIEW IF EXISTS {view_name}")
         self.duck_con.execute(f"CREATE TEMPORARY VIEW {view_name} AS {query}")
     
-    # Function to clear all tables and cache in DuckDB
-    def clean_duck(self):
-        #self.duck_con.execute('DROP ALL OBJECTS;')
-        self.duck_con.close()
-
-        # Clear any pandas DataFrames stored as instance variables.
-        for attr_name, attr_value in self.__dict__.items():
-            if isinstance(attr_value, pd.DataFrame):
-                print(f"Clearing {attr_name}")
-                delattr(self, attr_name)
-
-        # Clear SQL queries dictionary
-        if hasattr(self, 'queries_dict'):
-            print('Clearing queries_dict')
-            self.queries_dict.clear()
-
-        # Clear configuration dictionary
-        if hasattr(self, 'configs'):
-            print('Clearing configs')
-            self.configs.clear()
 
     # Function to check if data is loaded
     def check_data(self):
@@ -242,9 +213,10 @@ class Aggregations:
         # Each step is an immaterialized view that will be optimized together at the end
         self.create_view('detector_with_phase_ON_ONLY', view_name='view1', variable1=str(latency_offset)) #only contains detector on events, shifted by 1.5 seconds for latency
         self.create_view('phase_with_detector_ByApproach', view_name='view2', from_table='view1') #contains phase data and detector data together
-        self.create_view('with_cycle', view_name='view3', from_table='view2')        
-        self.create_view('red_offset', view_name='view4', from_table='view3')
-        return self.duck_con.query('SELECT * FROM view4').fetchdf()
+        self.create_view('with_cycle', view_name='view3', from_table='view2') 
+        self.create_view('valid_cycles', view_name='view4', from_table='view3')       
+        self.create_view('red_offset', view_name='view5', from_table='view4')
+        return self.duck_con.query('SELECT * FROM view5').fetchdf()
     
 
     # Arrival on Green
@@ -263,6 +235,15 @@ class Aggregations:
         self.create_view('arrival_on_green', view_name='view4', from_table='view3', variable1=str(bin_size))
         return self.duck_con.query('SELECT * FROM view4').fetchdf()
 
+
+    # Phase Terminations
+    def phase_termination(self, bin_size=15):
+        # Check if data table exists in DuckDB
+        self.check_data()
+        #print('working on phase termination (inside Aggregations.py)')
+        self.create_view('phase_termination', view_name='view1', from_table='raw_data', variable1=str(bin_size), debug=False)
+        #print('view created')
+        return self.duck_con.query('SELECT * FROM view1').fetchdf()
 
     # Optional, plot occupancy
     def plot_occupancy(self, sf, DeviceId, Phase=None, Detector=None):
@@ -335,3 +316,7 @@ class Aggregations:
         plt.title(f'Split Failures for DeviceId {DeviceId}, {name}')
         plt.tight_layout()
         plt.show()
+
+
+        class TimelineEvents:
+            pass

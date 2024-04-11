@@ -413,3 +413,42 @@ SELECT
     Count
 FROM renamed_table
 ORDER BY TimeStamp;
+
+-- valid_cycles
+-- remove cycles where there is not exactly one EventId equal to 1, 8, and 10
+-- this is to remove cycles where there is missing data for yellow_red actuations. 
+WITH step1 AS(
+    SELECT
+        DeviceId,
+        Phase,
+        Cycle_Number,
+        COUNT(CASE WHEN EventId = 1 THEN EventId END) as Green_Count,
+        COUNT(CASE WHEN EventId = 8 THEN EventId END) as Yellow_Count,
+        COUNT(CASE WHEN EventId = 10 THEN EventId END) as Red_Count
+    FROM @table
+    GROUP BY DeviceId, Phase, Cycle_Number),
+
+step2 AS(
+    SELECT DeviceId, Phase, Cycle_Number
+    FROM step1
+    WHERE Green_Count = 1 AND Yellow_Count = 1 AND Red_Count = 1
+)
+select * from @table
+NATURAL JOIN step2;
+
+
+-- phase_termination
+-- Returns phase terminations in bins
+SELECT
+    time_bucket(interval '@variable1 minutes', TimeStamp) as TimeStamp,
+    DeviceId::uint16 as DeviceId,
+    Parameter::uint8 as Phase,
+    CASE 
+        WHEN EventId = 4 THEN 'GapOut'
+        WHEN EventId = 5 THEN 'MaxOut'
+        WHEN EventId = 6 THEN 'ForceOff'
+    END AS PerformanceMeasure,
+    COUNT(*)::uint8 as Total
+FROM @table
+WHERE EventId IN (4, 5, 6) 
+GROUP BY ALL;
