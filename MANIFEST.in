@@ -1,0 +1,2 @@
+recursive-include src/atspm *.sql
+recursive-include src/atspm/data *.parquet

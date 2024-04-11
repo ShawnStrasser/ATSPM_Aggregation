@@ -1,0 +1,20 @@
+[project]
+name = "atspm"
+version = "1.0.3"
+authors = [
+  { name="Shawn Strasser", email="shawn.strasser@odot.oregon.gov" },
+]
+description = "Aggregates hi-res data from ATC traffic signal controllers into 15-minute binned ATSPM/performance measures."
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[tools.setuptools]
+include_package_data = true
+package_data = {"atspm" = ["*.sql", "data/*"]}
+
+

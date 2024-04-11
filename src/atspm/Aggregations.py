@@ -2,6 +2,10 @@
 import pandas as pd
 import duckdb
 import os
+#import importlib.resources as pkg_resources
+#with pkg_resources.open_text('ATSPM_Aggregation', 'queries.sql') as f:
+#    sql_query = f.read()
+
 
 class Utils:
     '''Helper functions to be shared across classes'''
