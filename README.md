@@ -1,6 +1,6 @@
 # ATSPM Aggregation
 
-`atspm` is a Python package to tranform hi-res ATC signal controller data into aggregate ATSPMs (Automated Traffic Signal Performance Measures). It works on multiple devices/detectors at once, executing SQL queries in parallel using DuckDB.
+`atspm` is a Python package to transform hi-res ATC signal controller data into aggregate ATSPMs (Automated Traffic Signal Performance Measures). It works on multiple devices/detectors at once, executing SQL queries in parallel using DuckDB.
 
 ## Installation
 
