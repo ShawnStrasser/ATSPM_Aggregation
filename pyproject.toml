@@ -1,6 +1,6 @@
 [project]
 name = "atspm"
-version = "1.0.3"
+version = "1.2.0"
 authors = [
   { name="Shawn Strasser", email="shawn.strasser@odot.oregon.gov" },
 ]
@@ -15,6 +15,6 @@ classifiers = [
 
 [tools.setuptools]
 include_package_data = true
-package_data = {"atspm" = ["*.sql", "data/*"]}
+package_data = {"atspm" = ["queries/*", "data/*"]}
 
 
