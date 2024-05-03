@@ -26,7 +26,6 @@ def load_data(conn, raw_data, detector_config):
         conn.execute(f"CREATE OR REPLACE TABLE raw_data AS SELECT * FROM '{raw_data}'")
     else:
         conn.execute(f"CREATE OR REPLACE TABLE raw_data AS SELECT * FROM raw_data")
-    print("Raw data loaded successfully")
     # Check that detector_config is not None
     if detector_config is not None:
         if isinstance(detector_config, str):

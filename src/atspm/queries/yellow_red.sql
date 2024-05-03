@@ -9,9 +9,8 @@ WITH view1 AS (
     -- Rename parameter as Detector to avoid cofusion
     SELECT d.TimeStamp - INTERVAL ({{latency_offset_seconds}} * 1000) MILLISECOND as TimeStamp,
         d.DeviceId, 
-        d.EventId, 
-        0 as Detector, --combine detectors by phase
-        CAST(c.Phase AS UTINYINT) AS Phase
+        d.EventId::int16 AS EventId, 
+        c.Phase::int16 AS Phase
     FROM {{from_table}} AS d
     JOIN detector_config AS c ON 
         d.DeviceId = c.DeviceId 
@@ -27,9 +26,8 @@ view2 AS (
     phase AS (
         SELECT TimeStamp, 
             DeviceId, 
-            EventId,
-            0 as Detector,
-            Parameter AS Phase 
+            EventId::int16 AS EventId,
+            Parameter::int16 AS Phase 
         FROM {{from_table}}
         WHERE EventId IN (1, 8, 10)
     )
@@ -50,18 +48,17 @@ view3 AS (
     ),
     step2 as (
         SELECT *,
-            CAST(SUM(Cycle_Number_Mask) OVER (PARTITION BY DeviceId, Detector, Phase ORDER BY TimeStamp, EventId) AS UINTEGER) AS Cycle_Number,
-            COUNT(Detector_State_Change) OVER (PARTITION BY DeviceId, Detector, Phase ORDER BY TimeStamp, EventId) AS Detector_Group
+            SUM(Cycle_Number_Mask) OVER (PARTITION BY DeviceId, Phase ORDER BY TimeStamp, EventId) AS Cycle_Number,
+            COUNT(Detector_State_Change) OVER (PARTITION BY DeviceId, Phase ORDER BY TimeStamp, EventId) AS Detector_Group
             FROM step1
     )
     SELECT TimeStamp,
         DeviceId, 
         EventId, 
-        Detector,
         Phase,
         Cycle_Number,
-        CAST(MAX(Signal_State_Mask) OVER (PARTITION BY DeviceId, Detector, Phase, Cycle_Number ORDER BY TimeStamp, EventId) AS UTINYINT) AS Signal_State,
-        CAST(MAX(Detector_State_Change) OVER (PARTITION BY DeviceId, Detector, Phase, Detector_Group ORDER BY TimeStamp, EventId) AS BOOL) AS Detector_State--, Detector_Group, Detector_State_Mask
+        MAX(Signal_State_Mask) OVER (PARTITION BY DeviceId, Phase, Cycle_Number ORDER BY TimeStamp, EventId)::int16 AS Signal_State,
+        CAST(MAX(Detector_State_Change) OVER (PARTITION BY DeviceId, Phase, Detector_Group ORDER BY TimeStamp, EventId) AS BOOL) AS Detector_State--, Detector_Group, Detector_State_Mask
     FROM step2
 ),
 
@@ -110,7 +107,7 @@ view5 AS (
             Signal_State,
             --Red Offset is rounded to nearest half second. This was based on visual observation of the smoothness of rounding from 0.2 seconds to 1 second, seemed to look good
             ROUND(DATEDIFF('MILLISECOND', Red_TimeStamp, TimeStamp)::float * 2 / 1000) / 2 AS Red_Offset,
-            COUNT(*) as Count
+            COUNT(*)::float as Count
         FROM view4
         NATURAL JOIN begin_reds
         WHERE EventId=82
@@ -124,13 +121,16 @@ view5 AS (
     SELECT 
         New_TimeStamp AS TimeStamp,
         DeviceId,
-        Phase,
+        Phase::int16 AS Phase,
         Signal_State,
         Red_Offset,
         Count
     FROM renamed_table
-    ORDER BY TimeStamp
+    {% if min_red_offset is defined %}
+    WHERE Red_Offset >= {{ min_red_offset }}
+    {% endif %}
+
 )
 
 
-SELECT * FROM view5 order by timestamp
+SELECT * FROM view5

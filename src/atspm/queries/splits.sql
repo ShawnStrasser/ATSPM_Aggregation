@@ -3,10 +3,10 @@
 
 SELECT 
 	TIME_BUCKET(interval '{{bin_size}} minutes', TimeStamp) as TimeStamp,
-	DeviceID,
-	EventID,
-	COUNT(*) AS Services, 
-	AVG(Parameter) AS Average_Split
+	DeviceId,
+	EventId::int16 AS EventId,
+	COUNT(*)::int16 AS Services, 
+	AVG(Parameter)::float AS Average_Split
 FROM 
 	{{from_table}}
 WHERE 

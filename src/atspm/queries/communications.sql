@@ -4,9 +4,8 @@
 SELECT
     TIME_BUCKET(interval '{{bin_size}} minutes', TimeStamp) as TimeStamp,
     DeviceId,
-    EventId,
-    --AVG(CONVERT(FLOAT, Parameter)) AS Average
-    AVG(Parameter) AS Average
+    EventId::int16 AS EventId,
+    AVG(Parameter)::float AS Average
 FROM
     {{from_table}}
 WHERE

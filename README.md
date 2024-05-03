@@ -24,22 +24,26 @@ params = {
     # Global Settings
     'raw_data': sample_data.data, # dataframe or file path to csv/parquet/json
     'detector_config': sample_data.config,
+    'bin_size': 15, # in minutes
     'output_dir': 'test_folder',
     'output_to_separate_folders': True,
     'output_format': 'csv', # csv/parquet/json
     'output_file_prefix': 'test_prefix',
-    # Performance Measure Settings
+    'remove_incomplete': True, # Remove periods with incomplete data by joining to the has_data table
+    # Performance Measures
     'aggregations': [
-        {'name': 'actuations', 'params': {'bin_size': bin_size}},
-        {'name': 'yellow_red', 'params': {'bin_size': bin_size, 'latency_offset_seconds': 1.5}},
-        {'name': 'arrival_on_green', 'params': {'bin_size': bin_size, 'latency_offset_seconds': 0}},
-        #{'name': 'communications', 'params': {'bin_size': bin_size, 'event_codes': '400,503,502'}}, #MaxView Specific
-        {'name': 'coordination', 'params': {'bin_size': bin_size}},
-        {'name': 'terminations', 'params': {'bin_size': bin_size}},
-        {'name': 'split_failures', 'params': {'bin_size': bin_size, 'red_time': 5, 'red_occupancy_threshold': 0.80, 'green_occupancy_threshold': 0.80, 'by_approach': True}},
-        {'name': 'ped', 'params': {'bin_size': bin_size}},
-        {'name': 'unique_ped', 'params': {'bin_size': bin_size, 'seconds_between_actuations': 15}},
-        {'name': 'splits', 'params': {'bin_size': bin_size}},
+        {'name': 'has_data', 'params': {'no_data_min': 3, 'min_data_points': 10}}, # in minutes, ie remove bins with less than 10 rows every 3 minutes
+        {'name': 'actuations', 'params': {}},
+        {'name': 'arrival_on_green', 'params': {'latency_offset_seconds': 0}},
+        {'name': 'communications', 'params': {'event_codes': '400,503,502'}}, # MAXVIEW Specific
+        {'name': 'coordination', 'params': {}}, # MAXTIME Specific
+        # detector faults and detector health almost ready
+        {'name': 'ped', 'params': {}},
+        {'name': 'split_failures', 'params': {'red_time': 5, 'red_occupancy_threshold': 0.80, 'green_occupancy_threshold': 0.70, 'by_approach': True}},
+        {'name': 'splits', 'params': {}}, # MAXTIME Specific
+        {'name': 'terminations', 'params': {}},
+        {'name': 'unique_ped', 'params': {'seconds_between_actuations': 15}},
+        {'name': 'yellow_red', 'params': {'latency_offset_seconds': 1.5, 'min_red_offset': -8}}, # min_red_offset is optional, it filters out actuations occuring -n seconds before start of red
     ]
 }
 

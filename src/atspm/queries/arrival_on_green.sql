@@ -11,8 +11,7 @@ WITH view1 AS (
     SELECT d.TimeStamp - INTERVAL ({{latency_offset_seconds}} * 1000) MILLISECOND as TimeStamp,
         d.DeviceId, 
         d.EventId, 
-        0 as Detector, --combine detectors by phase
-        CAST(c.Phase AS UTINYINT) AS Phase
+        c.Phase::int16 AS Phase,
     FROM {{from_table}} AS d
     JOIN detector_config AS c ON 
         d.DeviceId = c.DeviceId 
@@ -29,8 +28,7 @@ view2 AS (
         SELECT TimeStamp, 
             DeviceId, 
             EventId,
-            0 as Detector,
-            Parameter AS Phase 
+            Parameter::int16 AS Phase 
         FROM {{from_table}}
         WHERE EventId IN (1, 8, 10)
     )
@@ -51,18 +49,17 @@ view3 AS (
     ),
     step2 as (
         SELECT *,
-            CAST(SUM(Cycle_Number_Mask) OVER (PARTITION BY DeviceId, Detector, Phase ORDER BY TimeStamp, EventId) AS UINTEGER) AS Cycle_Number,
-            COUNT(Detector_State_Change) OVER (PARTITION BY DeviceId, Detector, Phase ORDER BY TimeStamp, EventId) AS Detector_Group
+            CAST(SUM(Cycle_Number_Mask) OVER (PARTITION BY DeviceId, Phase ORDER BY TimeStamp, EventId) AS UINTEGER) AS Cycle_Number,
+            COUNT(Detector_State_Change) OVER (PARTITION BY DeviceId, Phase ORDER BY TimeStamp, EventId) AS Detector_Group
             FROM step1
     )
     SELECT TimeStamp,
         DeviceId, 
         EventId, 
-        Detector,
         Phase,
         Cycle_Number,
-        CAST(MAX(Signal_State_Mask) OVER (PARTITION BY DeviceId, Detector, Phase, Cycle_Number ORDER BY TimeStamp, EventId) AS UTINYINT) AS Signal_State,
-        CAST(MAX(Detector_State_Change) OVER (PARTITION BY DeviceId, Detector, Phase, Detector_Group ORDER BY TimeStamp, EventId) AS BOOL) AS Detector_State--, Detector_Group, Detector_State_Mask
+        CAST(MAX(Signal_State_Mask) OVER (PARTITION BY DeviceId, Phase, Cycle_Number ORDER BY TimeStamp, EventId) AS UTINYINT) AS Signal_State,
+        CAST(MAX(Detector_State_Change) OVER (PARTITION BY DeviceId, Phase, Detector_Group ORDER BY TimeStamp, EventId) AS BOOL) AS Detector_State
     FROM step2
 ),
 
@@ -74,7 +71,7 @@ view4 AS (
             time_bucket(interval '{{bin_size}} minutes', TimeStamp) as Rounded_TimeStamp,
             DeviceId,
             Phase,
-            COUNT(*)::uint16 as Green_Actuations
+            COUNT(*)::int16 as Green_Actuations
         FROM view3
         WHERE
             EventId = 82
@@ -86,7 +83,7 @@ view4 AS (
             time_bucket(interval '{{bin_size}} minutes', TimeStamp) as Rounded_TimeStamp,
             DeviceId,
             Phase,
-            COUNT(*)::uint16 as Total_Actuations
+            COUNT(*)::int16 as Total_Actuations
         FROM view3
         WHERE
             EventId = 82

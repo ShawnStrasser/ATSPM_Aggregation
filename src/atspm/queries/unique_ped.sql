@@ -7,21 +7,21 @@
 
 SELECT
     TimeStamp,
-    DeviceID, 
+    DeviceId, 
     Phase,
-    COUNT(*) as Unique_Actuations
+    COUNT(*)::int16 as Unique_Actuations
 FROM
     (SELECT 
         TIME_BUCKET(interval '15 minutes', TimeStamp) as TimeStamp,
         DeviceId,
-        Parameter as Phase,
-        DATEDIFF('MILLISECOND', LAG(TimeStamp) OVER (PARTITION BY DeviceID, Parameter ORDER BY TimeStamp), TimeStamp) as Diff_Milliseconds    
+        Parameter::int16 as Phase,
+        DATEDIFF('MILLISECOND', LAG(TimeStamp) OVER (PARTITION BY DeviceID, Parameter ORDER BY TimeStamp), TimeStamp)::float as Diff_Milliseconds    
     FROM 
         {{from_table}}
     WHERE
-        EventID = 90
+        EventId = 90
     ) q
 WHERE
     q.Diff_Milliseconds > {{seconds_between_actuations}}000 --convert seconds to milliseconds
 GROUP BY
-    TimeStamp, DeviceID, Phase;
+    TimeStamp, DeviceID, Phase

@@ -1,5 +1,4 @@
---MaxTime Faults broken into 15-minute Bins
---If there is any MaxTime fault inside a 15-minute period then that time period is classified as a fault
+--Detector Faults broken into 15-minute Bins
 --NEEDS MORE WORK!!!!!!! NEED TO SAVE/USE DETECTOR STATES!
 -----------------DATE TABLE---------------------------
 WITH T AS (
@@ -7,14 +6,14 @@ WITH T AS (
     FROM generate_series(
         TIMESTAMP '{{min_timestamp}}',
         TIMESTAMP '{{max_timestamp}}',
-        INTERVAL '15 minutes'
+        INTERVAL '{{bin_size}} minutes'
     )
 ),
 -----------------ON TABLE---------------------------
 --All the shorted loop events
 ON_table AS (
     SELECT DISTINCT
-        time_bucket(INTERVAL '15 minutes', TimeStamp) AS TimeStamp,
+        time_bucket(INTERVAL '{{bin_size}} minutes', TimeStamp) AS TimeStamp,
         DeviceID,
         EventID,
         Parameter
@@ -31,7 +30,7 @@ list_table AS (
 --Union the detector off/restored events
 ALL_table AS (
     SELECT DISTINCT
-        time_bucket(INTERVAL '15 minutes', TimeStamp) AS TimeStamp,
+        time_bucket(INTERVAL '{{bin_size}} minutes', TimeStamp) AS TimeStamp,
         DeviceID,
         83 AS EventID,
         Parameter
@@ -83,7 +82,7 @@ STUCKON AS (
 SELECT * FROM STUCKON WHERE EventID = 87
 UNION ALL
 SELECT DISTINCT
-    time_bucket(INTERVAL '15 minutes', TimeStamp) AS TimeStamp,
+    time_bucket(INTERVAL '{{bin_size}} minutes', TimeStamp) AS TimeStamp,
     DeviceID,
     EventID,
     Parameter

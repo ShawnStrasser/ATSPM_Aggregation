@@ -3,11 +3,11 @@
 
 SELECT
 	TimeStamp,
-	DeviceID,
-	EventID,
-	Parameter,
+	DeviceId,
+	EventId::int16 AS EventId,
+	Parameter::int16 AS Parameter,
 	TIME_BUCKET(interval '{{bin_size}} minutes', TimeStamp) as '{{bin_size}}-Minute_TimeStamp'
 FROM 
 	{{from_table}}
 WHERE
-	EventID IN(131,132,316,318)
+	EventId IN(131,132,316,318)

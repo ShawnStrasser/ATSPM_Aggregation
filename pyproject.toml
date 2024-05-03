@@ -1,6 +1,6 @@
 [project]
 name = "atspm"
-version = "1.2.0"
+version = "1.3.0"
 authors = [
   { name="Shawn Strasser", email="shawn.strasser@odot.oregon.gov" },
 ]
@@ -11,6 +11,10 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "duckdb>=0.9.1,<0.10.2",
 ]
 
 [tools.setuptools]

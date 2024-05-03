@@ -1,10 +1,7 @@
 import os
 from jinja2 import Environment, FileSystemLoader
-from .data_saver import save_data
-
 
 def render_query(query_name, **kwargs):
-    print(query_name)
     # add from_table = 'raw_data' to the kwargs dictionary
     kwargs['from_table'] = 'raw_data'
     # Get the directory that contains the SQL templates
@@ -19,7 +16,15 @@ def render_query(query_name, **kwargs):
 
 def aggregate_data(conn, aggregation_name, **kwargs):
     query = render_query(aggregation_name, **kwargs)
-    #if aggregation_name == 'split_failures':
+    if aggregation_name != 'has_data' and kwargs['remove_incomplete']:
+        # Add natural join with has_data table
+        query = f"SELECT * FROM ({query}) main_query NATURAL JOIN has_data"
+    query = f"CREATE OR REPLACE TABLE {aggregation_name} AS {query};"
+    #print(query)
+    try:
+        conn.execute(query)
+    except Exception as e:
+        print('Error when executing query for: ', aggregation_name)
+        print(e)
+        #print('\n\nQuery:\n')
         #print(query)
-    query = f"CREATE OR REPLACE TABLE {aggregation_name} AS {query}"
-    conn.execute(query)

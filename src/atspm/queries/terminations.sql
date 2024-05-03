@@ -4,13 +4,13 @@
 SELECT
     time_bucket(interval '{{bin_size}} minutes', TimeStamp) as TimeStamp,
     DeviceId as DeviceId,
-    Parameter as Phase,
+    Parameter::int16 as Phase,
     CASE 
         WHEN EventId = 4 THEN 'GapOut'
         WHEN EventId = 5 THEN 'MaxOut'
         WHEN EventId = 6 THEN 'ForceOff'
     END AS PerformanceMeasure,
-    COUNT(*) as Total
+    COUNT(*)::int16 as Total
 FROM {{from_table}}
 WHERE EventId IN (4, 5, 6) 
-GROUP BY ALL;
+GROUP BY ALL

@@ -299,11 +299,19 @@ step8 AS (
 )
 
 
-SELECT *,
-CASE WHEN 
-    Red_Occupancy>={{red_occupancy_threshold}}
-    AND Green_Occupancy>={{green_occupancy_threshold}}
-    THEN True ELSE False END AS Split_Failure
-FROM step8;
-
---select * from step3
+SELECT 
+    time_bucket(interval '{{bin_size}} minutes', TimeStamp) as TimeStamp,
+    DeviceId,
+    {% if not by_approach %}
+    Detector::int16 as Detector,
+    {% endif %}
+    Phase::int16 as Phase,
+    AVG(Green_Time)::float as Green_Time,
+    AVG(Green_Occupancy)::float as Green_Occupancy,
+    AVG(Red_Occupancy)::float as Red_Occupancy,
+    SUM(CASE WHEN 
+        Red_Occupancy>={{red_occupancy_threshold}}
+        AND Green_Occupancy>={{green_occupancy_threshold}}
+        THEN 1 ELSE 0 END)::int16 AS Split_Failure
+FROM step8
+GROUP BY ALL

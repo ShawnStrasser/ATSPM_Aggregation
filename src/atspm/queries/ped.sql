@@ -5,16 +5,16 @@ SELECT *
 FROM (
 	SELECT 
 		TimeStamp, 
-		DeviceID, 
-		Parameter AS Phase, 
-		COALESCE("21", 0) + COALESCE("67", 0) AS PedServices, 
-		COALESCE("90", 0) AS PedActuation
+		DeviceId, 
+		Parameter::int16 AS Phase, 
+		COALESCE("21", 0)::int16 + COALESCE("67", 0)::int16 AS PedServices, 
+		COALESCE("90", 0)::int16 AS PedActuation
 	FROM (
 		SELECT 
 			TIME_BUCKET(interval '15 minutes', TimeStamp) AS TimeStamp, 
-			DeviceID, 
-			EventID, 
-			Parameter, 
+			DeviceId, 
+			EventId, 
+			Parameter,
 			COUNT(*) AS Total
 		FROM 
 			{{from_table}}
@@ -26,6 +26,6 @@ FROM (
 ) subquery
 WHERE 
 	PedServices > 0 
-	OR PedActuation > 0;
+	OR PedActuation > 0
 
 
