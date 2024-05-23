@@ -1,4 +1,4 @@
-DeviceID,TSSU & Name,Lattitude,Longitude
+DeviceID,Name,Latitude,Longitude
 1188,OR99E @ Berg Pkwy,45.25635,-122.70392
 1263,OR99E at Vineyard,45.40471,-122.6232
 470,99W @ SunsetBlvd/ElwertRd,45.35313,-122.86759
@@ -142,7 +142,6 @@ DeviceID,TSSU & Name,Lattitude,Longitude
 923,2B474 US26WB@Murray,45.52147,-122.81577
 893,OR141 @ 95th/Commerce Circle,45.33792,-122.77263
 894,OR141 @ Day Rd,45.34021,-122.77358
-1255,OR99E at River/Bluebird Rd,45.43735,-122.63991
 898,I-205 NB at Washington,45.51833,-122.56459
 903,I-205 SB at Powell ( US26),45.49737,-122.56663
 904,I-205 NB at Powell ( US26),45.49718,-122.56456
