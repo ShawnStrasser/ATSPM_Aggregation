@@ -1,4 +1,7 @@
-def load_data(conn, raw_data, detector_config):
+def load_data(conn,
+              raw_data=None,
+              detector_config=None,
+              unmatched_events=None):
     """
     Loads raw data and detector configuration into DuckDB tables.
 
@@ -15,20 +18,41 @@ def load_data(conn, raw_data, detector_config):
     detector_config : str or pandas.DataFrame, optional
         The detector configuration to be loaded. This can be a string representing the path to a file containing the detector configuration,
         or a pandas DataFrame containing the detector configuration. If this parameter is None, no detector configuration is loaded.
-
-    Raises
-    ------
-    ValueError
-        If raw_data or detector_config is a string and the file does not exist.
+    unmatched_events : str or pandas.DataFrame, optional
+        The unmatched events to be loaded. This can be a string representing the path to a file containing the unmatched events,
+        or a pandas DataFrame containing the unmatched events. If this parameter is None, no unmatched events are loaded.
     """
-    # Check if raw_data is an instance of str
-    if isinstance(raw_data, str):
-        conn.execute(f"CREATE OR REPLACE TABLE raw_data AS SELECT * FROM '{raw_data}'")
-    else:
-        conn.execute(f"CREATE OR REPLACE TABLE raw_data AS SELECT * FROM raw_data")
-    # Check that detector_config is not None
+    # Load Raw Data
+    load_sql = """
+        CREATE OR REPLACE TABLE raw_data AS
+        SELECT TimeStamp, DeviceId, EventId::INT16 as EventId, Parameter::INT16 as Parameter
+        """
+    if raw_data is not None:
+        if isinstance(raw_data, str):
+            conn.execute(f"{load_sql} FROM '{raw_data}'")
+        else:
+            conn.execute(f"{load_sql} FROM raw_data")
+
+    # Load Configurations (if provided)
+    load_sql = """
+        CREATE OR REPLACE TABLE detector_config AS
+        SELECT DeviceId, Phase::INT16 as Phase, Parameter::INT16 as Parameter, Function::STRING as Function
+        """
     if detector_config is not None:
         if isinstance(detector_config, str):
-            conn.execute(f"CREATE OR REPLACE TABLE detector_config AS SELECT * FROM '{detector_config}'")
+            conn.execute(f"{load_sql} FROM '{detector_config}'")
         else:
-            conn.execute(f"CREATE OR REPLACE TABLE detector_config AS SELECT * FROM detector_config")
+            conn.execute(f"{load_sql} FROM detector_config")
+
+    # Load unmatched_events (if provided)
+    load_sql = """
+        CREATE OR REPLACE TABLE unmatched_events AS
+        SELECT DeviceId, EventId::INT16 as EventId, Parameter::INT16 as Parameter
+        """
+    if unmatched_events is not None:
+        if isinstance(unmatched_events, str):
+            conn.execute(f"{load_sql} FROM '{unmatched_events}'")
+        else:
+            conn.execute(f"{load_sql} FROM unmatched_events")
+        # Create a view that unions the raw_data and unmatched_events tables
+        conn.execute("CREATE OR REPLACE VIEW all_events AS SELECT * FROM raw_data UNION ALL SELECT * FROM unmatched_events")

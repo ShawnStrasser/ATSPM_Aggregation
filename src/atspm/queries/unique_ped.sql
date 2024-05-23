@@ -12,7 +12,7 @@ SELECT
     COUNT(*)::int16 as Unique_Actuations
 FROM
     (SELECT 
-        TIME_BUCKET(interval '15 minutes', TimeStamp) as TimeStamp,
+        TIME_BUCKET(interval '{{bin_size}} minutes', TimeStamp) as TimeStamp,
         DeviceId,
         Parameter::int16 as Phase,
         DATEDIFF('MILLISECOND', LAG(TimeStamp) OVER (PARTITION BY DeviceID, Parameter ORDER BY TimeStamp), TimeStamp)::float as Diff_Milliseconds    

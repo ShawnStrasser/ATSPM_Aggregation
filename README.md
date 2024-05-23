@@ -1,6 +1,28 @@
 # ATSPM Aggregation
 
-`atspm` is a Python package to transform hi-res ATC signal controller data into aggregate ATSPMs (Automated Traffic Signal Performance Measures). It works on multiple devices/detectors at once.
+`atspm` is a production ready Python package to transform hi-res ATC signal controller data into aggregate ATSPMs (Automated Traffic Signal Performance Measures). It runs locally using the [DuckDB](https://duckdb.org/) SQL engine, but future development could include integration with [Ibis](https://ibis-project.org/) for compatability with any SQL backend. Ideas and contributions are welcome!
+
+## Aggregate Performance Measures
+Documentation is coming, for now these are the available performance measures:
+- Actuations
+- Arrival on Green
+- Communications (MaxView Specific, otherwise "Has Data" tells when controller generated data)
+- Coordination (MaxTime Specific)
+- Detector Faults
+- Detector Health
+- Pedestrian Actuations
+- Pedestrian Unique Actuations
+- *Total Pedestrian Delay is Coming Soon*
+- *Pedestrian Detector Health is Coming Soon*
+- Pedestrian Services
+- Pedestrian Estimated Volumes
+- Split Failures
+- Splits (MaxTime Specific)
+- Terminations
+- Timeline
+- Yellow and Red Actuations
+
+
 
 ## Installation
 
@@ -8,10 +30,14 @@
 pip install atspm
 ```
 
-## Quick Usage Guide
+## Usage
 
 After installing the package, you should be able to run the following code and explore the output files from provided sample data.
 
+Try out a self-contained example in Colab!<br> [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/14SPXPjpwbBEPpjKBN5s4LoqtHWSllvip?usp=sharing)
+
+
+Here is a simple, more thorough documentation is coming soon.
 ```python
 # Import libraries
 from atspm import SignalDataProcessor, sample_data

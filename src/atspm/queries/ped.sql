@@ -11,21 +11,20 @@ FROM (
 		COALESCE("90", 0)::int16 AS PedActuation
 	FROM (
 		SELECT 
-			TIME_BUCKET(interval '15 minutes', TimeStamp) AS TimeStamp, 
+			TIME_BUCKET(interval '{{bin_size}} minutes', TimeStamp) AS TimeStamp, 
 			DeviceId, 
 			EventId, 
 			Parameter,
 			COUNT(*) AS Total
 		FROM 
 			{{from_table}}
+		WHERE 
+			EventId IN (21, 90, 67)
 		GROUP BY ALL
 	) q
 	PIVOT (
 		SUM(Total) FOR EventID IN (21 AS "21", 90 AS "90", 67 AS "67")
 	)
 ) subquery
-WHERE 
-	PedServices > 0 
-	OR PedActuation > 0
 
 
