@@ -1,6 +1,6 @@
 [project]
 name = "atspm"
-version = "1.5.0"
+version = "1.5.1"
 authors = [
   { name="Shawn Strasser", email="shawn.strasser@odot.oregon.gov" },
 ]
@@ -14,7 +14,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "duckdb>=0.9.1,<0.10.2",
+    "duckdb>=0.9.1,<=1.0.0",
     "traffic-anomaly>=1.0.0",
     "ibis-framework[duckdb]==9.0.0",
     "jinja2",

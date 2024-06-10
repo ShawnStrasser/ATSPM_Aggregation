@@ -4,6 +4,7 @@ import traffic_anomaly
 from .data_loader import load_data
 from .data_aggregator import aggregate_data
 from .data_saver import save_data
+from .utils import round_down_15
 
 
 class SignalDataProcessor:
@@ -40,6 +41,7 @@ class SignalDataProcessor:
         self.binned_actuations = None # For detector_health aggregation
         self.device_groups = None # For detector_health aggregation if groups are provided
         self.remove_incomplete = False
+        self.to_sql = False
         
         # Extract parameters from kwargs
         for key, value in kwargs.items():
@@ -47,6 +49,8 @@ class SignalDataProcessor:
 
         # Check for valid bin_size and no_data_min combo
         if self.remove_incomplete:
+            # raise error if 'has_data' aggregation is not in aggregations
+            assert any(d['name'] == 'has_data' for d in self.aggregations), "Remove_incomplete requires 'has_data' aggregation!"
             # extract has_data parameters
             no_data_min = next(x['params']['no_data_min'] for x in self.aggregations if x['name'] == 'has_data')
             assert self.bin_size % no_data_min == 0, "bin_size / no_data_min must be a whole number"
@@ -73,17 +77,25 @@ class SignalDataProcessor:
         if self.data_loaded:
             print("Data already loaded! Reinstantiate the class to reload data.")
             return
-        load_data(self.conn,
-                self.raw_data,
-                self.detector_config,
-                self.unmatched_events)
-        # delete self.raw_data and self.detector_config to free up memory
-        del self.raw_data
-        del self.detector_config
-        self.data_loaded = True
-        self.min_timestamp = self.conn.execute("SELECT MIN(timestamp) FROM raw_data").fetchone()[0]
-        self.max_timestamp = self.conn.execute("SELECT MAX(timestamp) FROM raw_data").fetchone()[0]
-        print(f'Data loaded from {self.min_timestamp} to {self.max_timestamp}')
+        try:
+            load_data(self.conn,
+                    self.raw_data,
+                    self.detector_config,
+                    self.unmatched_events)
+            # delete self.raw_data and self.detector_config to free up memory
+            del self.raw_data
+            del self.detector_config
+            self.data_loaded = True
+            self.min_timestamp = self.conn.execute("SELECT MIN(timestamp) FROM raw_data").fetchone()[0]
+            self.max_timestamp = self.conn.execute("SELECT MAX(timestamp) FROM raw_data").fetchone()[0]
+            print(f'Data loaded from {self.min_timestamp} to {self.max_timestamp}')
+        except Exception as e:
+            print('*'*50)
+            print('Error when loading raw data!!!')
+            print('Make sure raw_data column names are: TimeStamp, DeviceId, EventId, Parameter')
+            print('Make sure detector_config column names are: DeviceId, Phase, Parameter, Function')
+            print('*'*50)
+            raise e
         
     def aggregate(self):
         """Runs all aggregations."""
@@ -143,11 +155,12 @@ class SignalDataProcessor:
             aggregation['params']['from_table'] = 'raw_data'
 
             #######################
-            ### Detector Faults / Full Pedestrian ###
+            ### Full Pedestrian ###
             # Add min_timestamp and max_timestamp to params if detector_faults or full_ped
-            if aggregation['name'] == 'detector_faults' or aggregation['name'] == 'full_ped':
-                aggregation['params']['min_timestamp'] = self.min_timestamp
-                aggregation['params']['max_timestamp'] = self.max_timestamp
+            if aggregation['name'] == 'full_ped':
+                # Round min_timestamp down to nearest bin_size
+                aggregation['params']['min_timestamp'] = round_down_15(self.min_timestamp)
+                aggregation['params']['max_timestamp'] = round_down_15(self.max_timestamp)
 
             #######################
             ### Timeline ##########

@@ -25,18 +25,22 @@ def load_data(conn,
     # Load Raw Data
     load_sql = """
         CREATE OR REPLACE TABLE raw_data AS
-        SELECT TimeStamp, DeviceId, EventId::INT16 as EventId, Parameter::INT16 as Parameter
+        SELECT TimeStamp::DATETIME as TimeStamp, DeviceId as DeviceId, EventId::INT16 as EventId, Parameter::INT16 as Parameter
         """
+    # From statment is used to load data from a file or a string (as DataFrame)
     if raw_data is not None:
         if isinstance(raw_data, str):
-            conn.execute(f"{load_sql} FROM '{raw_data}'")
+            load_sql += f" FROM '{raw_data}'"
         else:
-            conn.execute(f"{load_sql} FROM raw_data")
+            load_sql += " FROM raw_data"
+    # Filter out out of range values for EventId and Parameter (to avoid errors when loading data in case of anomalies/errors)
+    load_sql += " WHERE EventId >= 0 AND EventId <= 32767 AND Parameter >= 0 AND Parameter <= 32767"
+    conn.execute(load_sql)
 
     # Load Configurations (if provided)
     load_sql = """
         CREATE OR REPLACE TABLE detector_config AS
-        SELECT DeviceId, Phase::INT16 as Phase, Parameter::INT16 as Parameter, Function::STRING as Function
+        SELECT DeviceId as DeviceId, Phase::INT16 as Phase, Parameter::INT16 as Parameter, Function::STRING as Function
         """
     if detector_config is not None:
         if isinstance(detector_config, str):
@@ -44,15 +48,24 @@ def load_data(conn,
         else:
             conn.execute(f"{load_sql} FROM detector_config")
 
-    # Load unmatched_events (if provided)
-    load_sql = """
-        CREATE OR REPLACE TABLE unmatched_events AS
-        SELECT DeviceId, EventId::INT16 as EventId, Parameter::INT16 as Parameter
-        """
-    if unmatched_events is not None:
-        if isinstance(unmatched_events, str):
-            conn.execute(f"{load_sql} FROM '{unmatched_events}'")
-        else:
-            conn.execute(f"{load_sql} FROM unmatched_events")
-        # Create a view that unions the raw_data and unmatched_events tables
-        conn.execute("CREATE OR REPLACE VIEW all_events AS SELECT * FROM raw_data UNION ALL SELECT * FROM unmatched_events")
+
+# Load unmatched_events (if provided)
+    try:
+        # Adding try-except block in case unmatched_events timestamp is not in the correct format to automatically convert it
+        load_sql = """
+            CREATE OR REPLACE TABLE unmatched_events AS
+            SELECT TimeStamp::DATETIME AS TimeStamp, DeviceId as DeviceId, EventId::INT16 as EventId, Parameter::INT16 as Parameter
+            """
+        if unmatched_events is not None:
+            if isinstance(unmatched_events, str):
+                conn.execute(f"{load_sql} FROM '{unmatched_events}'")
+            else:
+                conn.execute(f"{load_sql} FROM unmatched_events")
+            # Create a view that unions the raw_data and unmatched_events tables
+            conn.execute("CREATE OR REPLACE VIEW all_events AS SELECT * FROM raw_data UNION ALL SELECT * FROM unmatched_events")
+    except Exception as e:
+        print("*"*50)
+        print("Error when loading unmatched events!")
+        print("Loading from a CSV file may cause errors if the timestamp is not in the correct format. Try saving data in Parquet instead.")
+        print("*"*50)
+        raise e

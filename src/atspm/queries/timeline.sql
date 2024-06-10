@@ -140,11 +140,11 @@ categories AS (
   SELECT * FROM (VALUES
     (150, 'Transition'),
     (102, 'Preempt'),
-    (87, 'Fault'),
-    (88, 'Fault'),
+    (87, 'Stuck On'),
+    (88, 'Erratic'),
     (21, 'Ped Service'),
     (131, 'Pattern Change'),
-    (99, 'Cycle Fault'),
+    --(99, 'Cycle Fault'),
     (300, 'Splits'),
     (301, 'Splits'),
     (302, 'Splits'),
@@ -163,7 +163,7 @@ categories AS (
 
 SELECT
   TIME_BUCKET(INTERVAL '{{bin_size}} minutes', t.TimeStamp) AS TimeStamp,
-  t.DeviceID::int16 AS DeviceId,
+  t.DeviceID AS DeviceId,
   t.EventID AS EventId, --to be dropped after extracting unmatched events
   t.Parameter AS Parameter, --same as above
   t.TimeStamp AS StartTime,
@@ -171,7 +171,7 @@ SELECT
   DATE_DIFF('millisecond', t.TimeStamp, t.EndTime)::FLOAT / 1000 AS Duration,
   --c.Category AS Category_Basic,
   CASE
-    WHEN c.Category IN ('Ped Service', 'FYA', 'Phase Call', 'Preempt', 'TSP Call', 'TSP Adjustment', 'Overlap Ped', 'Pattern Change') 
+    WHEN c.Category IN ('Ped Service', 'FYA', 'Phase Call', 'Preempt', 'TSP Call', 'TSP Adjustment', 'Overlap Ped', 'Pattern Change', 'Erratic', 'Stuck On') 
       THEN c.Category || ' ' || t.Parameter
     WHEN c.Category = 'Splits'
       THEN c.Category || ' ' || (t.EventId - 299)  

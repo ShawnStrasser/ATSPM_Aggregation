@@ -27,7 +27,9 @@ def aggregate_data(conn, aggregation_name, **kwargs):
 
     # For timeline aggregation, get unmatched rows (EndTime is null) and put them into table 'unmatched'
     if aggregation_name == 'timeline':
-        query += "CREATE OR REPLACE TABLE unmatched AS SELECT DeviceId FROM timeline WHERE EndTime IS NULL; "
+        query += """CREATE OR REPLACE TABLE unmatched AS
+                        SELECT StartTime AS TimeStamp, DeviceId, EventId, Parameter
+                        FROM timeline WHERE EndTime IS NULL; """
         # And drop unmatched rows from timeline table
         query += "DELETE FROM timeline WHERE EndTime IS NULL; "
         # Drop EventId and Parameter from timeline table
@@ -45,6 +47,7 @@ def aggregate_data(conn, aggregation_name, **kwargs):
             if kwargs['return_volumes']:
                 # Create updated table with the volume data
                 ped_data = conn.sql("SELECT * FROM full_ped").df()
+                #print(ped_data.head())
                 ped_data['Estimated_Volumes'] = ped_data.groupby(['DeviceId', 'Phase'])['Estimated_Hourly'].transform(undo_rolling_sum)
                 sql = """
                     CREATE OR REPLACE TABLE full_ped AS
@@ -52,6 +55,7 @@ def aggregate_data(conn, aggregation_name, **kwargs):
                     FROM ped_data
                     WHERE PedServices >0 OR PedActuation >0 OR Unique_Actuations >0 OR Estimated_Volumes
                     """
+                #print(ped_data.head())
                 conn.sql(sql)
 
     except Exception as e:

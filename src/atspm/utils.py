@@ -18,3 +18,9 @@ def undo_rolling_sum(data):
     # Round to single decimal place
     result = np.round(result, 1)
     return result
+
+
+# round datetime object down to nearest 15 minutes using datetime
+def round_down_15(dt):
+    minutes = (dt.minute // 15) * 15
+    return dt.replace(minute=minutes, second=0, microsecond=0)
